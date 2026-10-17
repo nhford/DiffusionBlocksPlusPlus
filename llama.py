@@ -101,32 +101,27 @@ def load_data(args):
         raise ValueError(f"Invalid data name: {args.data_name}")
 
 
-def load_llama():
-    # See Appendix E.4 in the Sakana.ai paper
-    config = LlamaConfig(
-        vocab_size=32000,
-        num_hidden_layers=12,
-        hidden_size=768,
-        num_attention_heads=12,
-    )
-
-    return LlamaForCausalLM(config)
-
-
 class LlamaModel(L.LightningModule):
     def __init__(self, args):
         super().__init__()
         self.args = args
         self.valid_metrics = torchmetrics.MetricCollection(
-            {
-            },
+            {},
             prefix="val/",
         )
         self.test_metrics = self.valid_metrics.clone(prefix="test/")
         self.save_hyperparameters(args)
 
     def configure_model(self):
-        self.model = load_llama()
+        # See Appendix E.4 in the Sakana.ai paper
+        self.llama_config = LlamaConfig(
+            vocab_size=32000,
+            num_hidden_layers=12,
+            hidden_size=768,
+            num_attention_heads=12,
+        )
+
+        self.model = LlamaForCausalLM(self.llama_config)
         self.tokenizer = AutoTokenizer.from_pretrained(
             "NousResearch/Llama-2-7b-chat-hf"
         )
@@ -153,9 +148,19 @@ class LlamaModel(L.LightningModule):
         return self.model(**kwargs).logits
 
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
-        input_ids = batch["input_ids"]
-        labels = batch["labels"]
-        attention_mask = batch["attention_mask"]
+        tokenizer_outputs = self.tokenizer(
+            batch["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=256 + 1,
+            return_tensors="pt",
+        )
+
+        input_ids = tokenizer_outputs.input_ids[:, :-1].to(self.model.device)
+        labels = tokenizer_outputs.input_ids[:, 1:].to(self.model.device)
+        attention_mask = tokenizer_outputs.attention_mask[:, :-1].to(
+            self.model.device
+        )
         logits = self(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         if return_metrics:
             if step == "val":
@@ -183,20 +188,6 @@ class LlamaModel(L.LightningModule):
         return {}
 
     def training_step(self, batch, batch_idx):
-        tokenizer_outputs = self.tokenizer(
-            batch["text"],
-            padding="max_length",
-            truncation=True,
-            max_length=256 + 1,
-            return_tensors="pt",
-        )
-
-        batch["input_ids"] = tokenizer_outputs.input_ids[:, :-1].to(self.model.device)
-        batch["labels"] = tokenizer_outputs.input_ids[:, 1:].to(self.model.device)
-        batch["attention_mask"] = tokenizer_outputs.attention_mask[:, :-1].to(
-            self.model.device
-        )
-
         batch_size = len(batch["text"])
         model_kwargs = self.get_model_kwargs(batch)
         loss, loss_dict = self.shared_step(batch, step="train", **model_kwargs)
@@ -204,13 +195,13 @@ class LlamaModel(L.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        batch_size = batch["input_ids"].shape[0]
+        batch_size = len(batch["text"])
         model_kwargs = self.get_model_kwargs(batch)
         res = self.shared_step(batch, step="val", return_metrics=True, **model_kwargs)
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
-        batch_size = batch["input_ids"].shape[0]
+        batch_size = len(batch["text"])
         model_kwargs = self.get_model_kwargs(batch)
         res = self.shared_step(batch, step="test", return_metrics=True, **model_kwargs)
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
