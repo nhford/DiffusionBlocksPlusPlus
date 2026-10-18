@@ -188,6 +188,19 @@ class ViTDBlockModel(ViTModel):
         return values[counts.argmax()].item()
 
     def denoise(self, x, zt, sigma, block_idx=None):
+        """
+        Denoise a class embedding zt conditioned on image x.
+
+        This function produces logit predictions for 
+
+        Args:
+            x (torch.Tensor): A (BxCxWxH) tensor containing batches of images
+            zt (torch.Tensor): A (BxC) tensor containing noised embeddings
+            sigma (torch.Tensor): A (B) tensor containing standard devaiations of noise
+
+        TODO: Finish documenting this function
+
+        """
         if block_idx is None:
             block_idx = self.estimate_target_layer(sigma)
         if self.class_dropout_prob > 0.0 and self.training:
@@ -276,6 +289,7 @@ class ViTDBlockModel(ViTModel):
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
             # denoise
+            # This is the indirect denoising expectation trick from the CDCD paper
             logits = self.denoise(x, z, sigma)
             probs = F.softmax(logits, dim=1)
             denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
