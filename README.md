@@ -30,13 +30,13 @@ The model checkpoints are saved in `logs` folder.
 **Baseline (ViT):**
 
 ```bash
-uv run main.py train cifar100 --model_type vit
+uv run python -m diffusion_blocks_plus_plus.deploy_vit train cifar100 --model_type vit
 ```
 
 **DiffusionBlocks:**
 
 ```bash
-uv run main.py train cifar100 --model_type dblock
+uv run python -m diffusion_blocks_plus_plus.deploy_vit train cifar100 --model_type dblock
 ```
 
 * **NOTE:** the total epochs in DiffusionBlocks is multiplied by the number of blocks to align the total number of iterations with the baseline as one step in DiffusionBlocks corresponds to training for one block.

@@ -7,8 +7,8 @@ import lightning as L
 import torchmetrics
 from transformers import get_scheduler
 
-from vit import load_vit
-from dblock_modules import get_block_sigmas, get_discrete_sigmas
+from .vit import load_vit
+from .dblock_modules import get_block_sigmas, get_discrete_sigmas
 
 
 def load_model(args):

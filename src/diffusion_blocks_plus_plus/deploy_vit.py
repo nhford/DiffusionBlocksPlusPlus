@@ -8,8 +8,8 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.strategies import DDPStrategy, DeepSpeedStrategy
 
-from data import load_data
-from model import load_model
+from .vit.data import load_data
+from .vit.model import load_model
 
 torch.set_float32_matmul_precision("high")
 torch.backends.cuda.matmul.allow_tf32 = True

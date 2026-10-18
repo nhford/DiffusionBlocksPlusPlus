@@ -1,5 +1,5 @@
 [project]
-name = "DiffusionBlocks"
+name = "diffusion_blocks_plus_plus"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
