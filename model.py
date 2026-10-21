@@ -233,7 +233,7 @@ class ViTDBlockModel(ViTModel):
         labels = batch["labels"]
 
         if return_metrics:
-            logits = self.diffusion_step(pixel_values)
+            logits = self.diffusion_step(pixel_values,ode='euler')
             if step == "val":
                 return self.valid_metrics(
                     logits.view(-1, self.num_labels), labels.view(-1)
@@ -266,7 +266,7 @@ class ViTDBlockModel(ViTModel):
         }
         return loss, loss_dict
 
-    def diffusion_step(self, x):
+    def diffusion_step(self, x, ode='euler'):
         bsz = x.shape[0]
         hidden_size = self.model.config.hidden_size
         z = torch.randn(bsz, hidden_size, device=self.device)
@@ -275,7 +275,7 @@ class ViTDBlockModel(ViTModel):
         for i in range(self.sigmas.shape[0] - 1):
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
-            # denoise
+            # denoise at current 
             logits = self.denoise(x, z, sigma)
             probs = F.softmax(logits, dim=1)
             denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
