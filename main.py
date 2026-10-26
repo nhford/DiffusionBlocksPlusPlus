@@ -37,7 +37,7 @@ def main(args):
     logger = WandbLogger(
         project=f"dblocks-{args.data_name}",
         name=nowname,
-        version=nowname,
+        version=__import__("uuid").uuid4().hex,
         offline=args.debug,
         save_dir=logdir,
         # group=f"{args.data_name}",
@@ -78,6 +78,9 @@ def main(args):
             trainer.test(model, data.test_dataloader(), ckpt_path="best")
     else:
         assert args.ckpt_path is not None
+        model.test_kwargs = (
+            {"ode": args.ode} if args.model_type == "dblock" else {}
+        )
         trainer.test(model, data, ckpt_path=args.ckpt_path)
 
 
@@ -122,5 +125,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_inference_steps", type=int, default=None)
     parser.add_argument("--cfg_scale", type=float, default=0.0)
     parser.add_argument("--class_dropout_prob", type=float, default=0.0)
+    parser.add_argument("--ode", type=str, default="euler")
     args = parser.parse_args()
     main(args)

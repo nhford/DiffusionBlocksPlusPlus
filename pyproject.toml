@@ -14,7 +14,7 @@ dependencies = [
     "huggingface-hub[hf-xet]>=0.31.2",
     "hf-transfer>=0.1.9",
     "scipy>=1.16.2",
-    "flash-attn==2.7.4.post1",
+    "flash-attn==2.7.4.post1; sys_platform == 'linux'",
 ]
 
 

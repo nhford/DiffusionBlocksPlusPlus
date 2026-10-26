@@ -103,7 +103,8 @@ class ViTModel(L.LightningModule):
     def test_step(self, batch, batch_idx):
         batch_size = batch["pixel_values"].shape[0]
         model_kwargs = self.get_model_kwargs(batch)
-        res = self.shared_step(batch, step="test", return_metrics=True, **model_kwargs)
+        combined_kwargs = {**model_kwargs, **self.test_kwargs}
+        res = self.shared_step(batch, step="test", return_metrics=True, **combined_kwargs)
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
 
 
@@ -133,6 +134,9 @@ class ViTDBlockModel(ViTModel):
                 "class_dropout_prob": self.class_dropout_prob,
             },
         )
+
+        # add diffusion step method
+        self.test_kwargs = {}
 
     def configure_model(self):
         self.model = load_vit(
@@ -231,9 +235,10 @@ class ViTDBlockModel(ViTModel):
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
         pixel_values = batch["pixel_values"]
         labels = batch["labels"]
+        ode = kwargs.get("ode", "euler")
 
         if return_metrics:
-            logits = self.diffusion_step(pixel_values,ode='euler')
+            logits = self.diffusion_step(pixel_values,ode=ode)
             if step == "val":
                 return self.valid_metrics(
                     logits.view(-1, self.num_labels), labels.view(-1)
@@ -284,7 +289,21 @@ class ViTDBlockModel(ViTModel):
             dt = next_sigma - sigma
             # euler step
             euler_step = z + dt[:, None] * d
-            z = euler_step
+
+            if ode == 'euler':
+                z = euler_step
+            elif ode == 'heun':
+                # TODO: predict the next "denoised" at the position of the euler step
+                logits = self.denoise(x, euler_step, next_sigma) # TODO: should sigma be next sigma?
+                probs = F.softmax(logits, dim=1)
+                denoised1 = F.linear(probs, self.model.get_input_embeddings().weight.t())
+
+                # TODO: compute the average "denoising step"
+                d2 = (euler_step - denoised1) / next_sigma[:, None]
+                heun_step = z + dt[:, None] * (d + d2) / 2
+                
+                z = heun_step
+            
         min_sigma = self.sigmas[-1].item()
         sigmas = torch.full((x.shape[0],), min_sigma, device=self.device)
         logits = self.denoise(x, z, sigmas)
