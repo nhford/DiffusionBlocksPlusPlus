@@ -285,10 +285,10 @@ class ViTDBlockModel(ViTModel):
             probs = F.softmax(logits, dim=1)
             denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
             # to d
-            d = (z - denoised) / sigma[:, None]
-            dt = next_sigma - sigma
+            d_euler = (z - denoised) / sigma[:, None]
+            dt_euler = next_sigma - sigma
             # euler step
-            euler_step = z + dt[:, None] * d
+            euler_step = z + dt_euler[:, None] * d_euler
 
             if ode == 'euler':
                 z = euler_step
@@ -296,11 +296,11 @@ class ViTDBlockModel(ViTModel):
                 # TODO: predict the next "denoised" at the position of the euler step
                 logits = self.denoise(x, euler_step, next_sigma) # TODO: should sigma be next sigma?
                 probs = F.softmax(logits, dim=1)
-                denoised1 = F.linear(probs, self.model.get_input_embeddings().weight.t())
+                denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
 
                 # TODO: compute the average "denoising step"
-                d2 = (euler_step - denoised1) / next_sigma[:, None]
-                heun_step = z + dt[:, None] * (d + d2) / 2
+                d_heun = (euler_step - denoised) / next_sigma[:, None]
+                heun_step = z + dt_euler[:, None] * (d_euler + d_heun) / 2
                 
                 z = heun_step
             
