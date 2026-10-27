@@ -88,6 +88,8 @@ def build_attention_mask(attention_mask: torch.Tensor):
 
 
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # See Appendix E.4 in the Sakana.ai paper
     if USE_DBLOCK:
         config = LlamaDiTConfig(
@@ -109,6 +111,8 @@ if __name__ == "__main__":
         )
 
         model = LlamaForCausalLM(config)
+
+    model = model.to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -145,7 +149,7 @@ if __name__ == "__main__":
             return_tensors="pt",
         )
 
-        token_ids: torch.Tensor = tokens.input_ids
+        token_ids: torch.Tensor = tokens.input_ids.to(device)
         assert isinstance(token_ids, torch.Tensor) and token_ids.shape == (
             batch_size,
             SEQUENCE_LENGTH + 1,
@@ -153,7 +157,7 @@ if __name__ == "__main__":
         if DEBUG_LEARN_NOISE:
             token_ids = torch.randint_like(token_ids, 2)
 
-        masked_positions: torch.Tensor = tokens.attention_mask
+        masked_positions: torch.Tensor = tokens.attention_mask.to(device)
         assert isinstance(
             masked_positions, torch.Tensor
         ) and masked_positions.shape == (
@@ -184,7 +188,8 @@ if __name__ == "__main__":
         # Add noise to noisy embeddings
         # TODO modify noise and base scaling to match the paper
         noise_stdevs = (
-            torch.rand((batch_size, 1, 1)) * (DEBUG_NOISE_MAX - DEBUG_NOISE_MIN)
+            torch.rand((batch_size, 1, 1), device=device)
+            * (DEBUG_NOISE_MAX - DEBUG_NOISE_MIN)
             + DEBUG_NOISE_MIN
         )
         noise = torch.randn_like(noisy_embeddings)
@@ -207,7 +212,7 @@ if __name__ == "__main__":
 
         position_ids = torch.cat(
             [torch.arange(0, SEQUENCE_LENGTH), torch.arange(1, SEQUENCE_LENGTH + 1)]
-        )
+        ).to(device)
         position_ids = position_ids.view((1, SEQUENCE_LENGTH * 2))
 
         optimizer.zero_grad()
