@@ -32,18 +32,23 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (BaseModelOutputWithPast,
-                                           CausalLMOutputWithPast)
-from transformers.modeling_utils import PreTrainedModel
-from transformers.models.llama.modeling_llama import (KwargsForCausalLM,
-                                                      LlamaAttention, LlamaMLP,
-                                                      LlamaRMSNorm,
-                                                      LlamaRotaryEmbedding)
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
+from transformers.models.llama.modeling_llama import (
+    KwargsForCausalLM,
+    LlamaAttention,
+    LlamaMLP,
+    LlamaRMSNorm,
+    LlamaRotaryEmbedding,
+)
 
 
 class AdaRMS(nn.Module):
     """
-    RMSNorm equivalent to the AdaLN normalization from Peebles and Xie (https://arxiv.org/abs/2212.09748).
+    RMSNorm equivalent to the AdaLN normalization from Peebles and Xie
+    (https://arxiv.org/abs/2212.09748).
 
     In detail, this layer takes an embedding and a conditioning tensor, whose
     dimensions must be breadcastable except for the last dimension, computes a
@@ -61,6 +66,9 @@ class AdaRMS(nn.Module):
             features: The size of the embeddings being normalized by this layer.
             bias: Whether this layer applies embeddings to the normalized
             embeddings.
+
+        This module takes a conditioning tensor (batch_size, cond_size) and an
+        embeddings tensor (batch_size, sequence, features)
         """
         super().__init__()
         self.silu = nn.SiLU()
@@ -79,12 +87,11 @@ class AdaRMS(nn.Module):
             scale = rmsnorm_params
             bias = torch.zeros_like(scale)
 
-        scale += 1
+        scale = scale + 1
 
-        return (
-            embeddings / (embeddings.norm(p=2, dim=-1, keepdim=True) + self.eps) * scale
-            + bias
-        )
+        rms = ((embeddings * embeddings).mean(-1, keepdim=True) + self.eps).sqrt()
+
+        return embeddings / rms * scale[:, None, :] + bias[:, None, :]
 
 
 class TimestepEmbedder(nn.Module):
@@ -135,6 +142,8 @@ class TimestepEmbedder(nn.Module):
 
 
 class LlamaDiTConfig(LlamaConfig):
+    cond_hidden_size: int  # hidden dimension size for both timestep embedder and adarms
+
     def __init__(
         self,
         vocab_size=32000,
@@ -160,6 +169,7 @@ class LlamaDiTConfig(LlamaConfig):
         mlp_bias=False,
         head_dim=None,
         cond_hidden_size: int | None = None,
+        use_timestep_embedding=True,
         **kwargs,
     ):
         super().__init__(
@@ -193,6 +203,8 @@ class LlamaDiTConfig(LlamaConfig):
         else:
             self.cond_hidden_size = cond_hidden_size
 
+        self.use_timestep_embedding = use_timestep_embedding
+
 
 class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: LlamaDiTConfig, layer_idx: int):
@@ -200,12 +212,24 @@ class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
         self.hidden_size = config.hidden_size
 
         self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+        self.use_timestep_embedding = config.use_timestep_embedding
 
         self.mlp = LlamaMLP(config)
-        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps
-        )
+        if self.use_timestep_embedding:
+            self.input_layernorm = AdaRMS(
+                config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
+            )
+            self.post_attention_layernorm = AdaRMS(
+                config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
+            )
+
+        else:
+            self.input_layernorm = LlamaRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            )
+            self.post_attention_layernorm = LlamaRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            )
 
     def forward(
         self,
@@ -219,12 +243,16 @@ class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[
             Tuple[torch.Tensor, torch.Tensor]
         ] = None,  # necessary, but kept here for BC
+        timestep_embeddings: Optional[torch.Tensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
     ]:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        if self.use_timestep_embedding:
+            hidden_states = self.input_layernorm(hidden_states, timestep_embeddings)
+        else:
+            hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
         hidden_states, self_attn_weights = self.self_attn(
@@ -242,7 +270,12 @@ class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        if self.use_timestep_embedding:
+            hidden_states = self.post_attention_layernorm(
+                hidden_states, timestep_embeddings
+            )
+        else:
+            hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -268,7 +301,15 @@ class LlamaDiTModel(LlamaPreTrainedModel):
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
-        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.use_timestep_embedding = config.use_timestep_embedding
+        if self.use_timestep_embedding:
+            self.norm = AdaRMS(
+                config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
+            )
+            self.time_embedder = TimestepEmbedder(config.cond_hidden_size)
+        else:
+            self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
@@ -292,6 +333,7 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        timestep: Optional[torch.FloatTensor] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         output_attentions = (
@@ -309,6 +351,11 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
+            )
+
+        if (timestep is None) == self.use_timestep_embedding:
+            raise ValueError(
+                "You must specify timestep iff use_timestep_embedding is active"
             )
 
         if self.gradient_checkpointing and self.training and use_cache:
@@ -359,6 +406,9 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
+        if self.use_timestep_embedding:
+            timestep_embeddings = self.time_embedder(timestep)
+
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -372,6 +422,13 @@ class LlamaDiTModel(LlamaPreTrainedModel):
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
+                **(
+                    dict(
+                        timestep_embeddings=timestep_embeddings,
+                    )
+                    if self.use_timestep_embedding
+                    else {}
+                ),
                 **flash_attn_kwargs,
             )
 
@@ -380,7 +437,10 @@ class LlamaDiTModel(LlamaPreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-        hidden_states = self.norm(hidden_states)
+        if self.use_timestep_embedding:
+            hidden_states = self.norm(hidden_states, timestep_embeddings)
+        else:
+            hidden_states = self.norm(hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -579,6 +639,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
+        timestep: Optional[torch.FloatTensor] = None,
         **kwargs: Unpack[KwargsForCausalLM],
     ) -> CausalLMOutputWithPast:
         r"""
@@ -625,6 +686,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
+            timestep=timestep,
             **kwargs,
         )
 

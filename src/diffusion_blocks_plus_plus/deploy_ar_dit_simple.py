@@ -20,14 +20,17 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .plot_data import generate_plot
 
-SEQUENCE_LENGTH = 20  # TODO: 256 is prod
-BATCH_SIZE = 10  # TODO: Should be 256 as in original paper
-LEARNING_RATE = 0.0001
+SEQUENCE_LENGTH = 1  # TODO: 256 is prod
+BATCH_SIZE = 100  # TODO: Should be 256 as in original paper
+LEARNING_RATE = 0.001
 USE_DBLOCK = True
+EMBED_TIMESTEPS = False
+
 DEBUG_LEARN_NOISE = True
-DEBUG_NOISE_MIN = 0
+DEBUG_NOISE_MIN = 1
 DEBUG_NOISE_MAX = 1
 DEBUG_SMALL_DATASET = True
+DEBUG_FORCE_COND = True
 
 
 def build_attention_mask(attention_mask: torch.Tensor):
@@ -71,7 +74,11 @@ def build_attention_mask(attention_mask: torch.Tensor):
 
     num_batches, seq_len = attention_mask.shape
 
-    result = torch.full((num_batches, 1, seq_len * 2, seq_len * 2), float("-inf"))
+    result = torch.full(
+        (num_batches, 1, seq_len * 2, seq_len * 2),
+        float("-inf"),
+        device=attention_mask.device,
+    )
 
     for batch in range(num_batches):
         for query_idx in range(seq_len):
@@ -98,6 +105,7 @@ if __name__ == "__main__":
             hidden_size=768,
             num_attention_heads=12,
             intermediate_size=3072,
+            use_timestep_embedding=EMBED_TIMESTEPS,
         )
 
         model = LlamaDiTForCausalLM(config)
@@ -126,7 +134,7 @@ if __name__ == "__main__":
     tokenizer.add_eos_token = True
 
     if DEBUG_SMALL_DATASET:
-        train_dataset = load_dataset("roneneldan/TinyStories", split="train[:1000]")
+        train_dataset = load_dataset("roneneldan/TinyStories", split="train[:10000]")
     else:
         train_dataset = load_dataset("roneneldan/TinyStories", split="train")
     assert isinstance(train_dataset, dataset_dict.Dataset)
@@ -195,6 +203,10 @@ if __name__ == "__main__":
         noise = torch.randn_like(noisy_embeddings)
         noisy_embeddings = noise_stdevs * noise + (1 - noise_stdevs) * noisy_embeddings
 
+        if DEBUG_FORCE_COND:
+            # A Debug shim we can put in place is to rerandomize the noise conditioning and perturb outputs to add a pure noise value
+            noise_stdevs = torch.rand((batch_size, 1, 1), device=device)
+
         input_embeddings = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
         assert input_embeddings.shape == (
             batch_size,
@@ -220,6 +232,11 @@ if __name__ == "__main__":
             inputs_embeds=input_embeddings,
             attention_mask=attention_mask,
             position_ids=position_ids,
+            **(
+                dict(timestep=noise_stdevs.view((batch_size,)))
+                if EMBED_TIMESTEPS and USE_DBLOCK
+                else {}
+            ),
         )
         logits = outputs.logits
         assert logits is not None and logits.shape == (
@@ -227,6 +244,8 @@ if __name__ == "__main__":
             SEQUENCE_LENGTH * 2,
             config.vocab_size,
         )
+        if DEBUG_FORCE_COND:
+            logits[:, :, :1] += (noise_stdevs - 0.5) * 8
         denoise_logits = logits[:, SEQUENCE_LENGTH:, :]
         denoise_logits = denoise_logits.transpose(1, 2)
         targets = token_ids[:, 1:]
