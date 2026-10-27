@@ -16,6 +16,7 @@ dependencies = [
     "scipy>=1.16.2",
     "flash-attn==2.7.4.post1",
     "isort>=9.0.2",
+    "matplotlib>=3.11.2",
 ]
 
 

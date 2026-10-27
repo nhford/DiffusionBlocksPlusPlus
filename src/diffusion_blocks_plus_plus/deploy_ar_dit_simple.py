@@ -1,3 +1,7 @@
+import os
+from datetime import datetime
+
+import pandas
 import torch
 import torch.nn.functional as F
 from datasets import dataset_dict, load_dataset
@@ -12,14 +16,18 @@ from transformers import (
     LlamaTokenizerFast,
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 
-SEQUENCE_LENGTH = 8  # TODO: 256 is prod
-BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
+from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
+from .plot_data import generate_plot
+
+SEQUENCE_LENGTH = 20  # TODO: 256 is prod
+BATCH_SIZE = 10  # TODO: Should be 256 as in original paper
+LEARNING_RATE = 0.0001
 USE_DBLOCK = True
 DEBUG_LEARN_NOISE = True
 DEBUG_NOISE_MIN = 0
-DEBUG_NOISE_MAX = 0.1
+DEBUG_NOISE_MAX = 1
+DEBUG_SMALL_DATASET = True
 
 
 def build_attention_mask(attention_mask: torch.Tensor):
@@ -113,14 +121,18 @@ if __name__ == "__main__":
     tokenizer.padding_side = "right"
     tokenizer.add_eos_token = True
 
-    dataset = load_dataset("roneneldan/TinyStories")
-    assert isinstance(dataset, dataset_dict.DatasetDict)
-    dataloader = DataLoader(dataset["train"], batch_size=2)  # type: ignore The dataset is simple enough to be compatible
+    if DEBUG_SMALL_DATASET:
+        train_dataset = load_dataset("roneneldan/TinyStories", split="train[:1000]")
+    else:
+        train_dataset = load_dataset("roneneldan/TinyStories", split="train")
+    assert isinstance(train_dataset, dataset_dict.Dataset)
+    dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
-    optimizer = AdamW(model.parameters(), lr=0.001)
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
 
+    results = []
     progress = tqdm(dataloader)
-    for batch in progress:
+    for batch_idx, batch in enumerate(progress):
         batch_text: list[str] = batch["text"]
 
         batch_size = len(batch_text)
@@ -217,5 +229,16 @@ if __name__ == "__main__":
         loss = loss * masked_positions[:, 1:]
         loss = loss.sum() / masked_positions[:, 1:].sum()
         loss.backward()
-        progress.set_postfix({"loss": loss.item()})
         optimizer.step()
+
+        results.append({"batch_idx": batch_idx, "loss": loss.item()})
+        progress.set_postfix({"loss": loss.item()})
+
+    name = datetime.now().isoformat()
+    os.makedirs("./data", exist_ok=True)
+    results = pandas.DataFrame(results)
+    results.to_csv(f"./data/{name}.csv")
+
+    generate_plot(name)
+
+    model.save_pretrained(f"./checkpoints/{name}.ckpt")
