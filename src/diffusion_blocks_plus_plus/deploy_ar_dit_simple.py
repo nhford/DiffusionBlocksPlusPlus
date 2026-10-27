@@ -12,9 +12,14 @@ from transformers import (
     LlamaTokenizerFast,
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 
 SEQUENCE_LENGTH = 8  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
+USE_DBLOCK = True
+DEBUG_LEARN_NOISE = True
+DEBUG_NOISE_MIN = 0
+DEBUG_NOISE_MAX = 0.1
 
 
 def build_attention_mask(attention_mask: torch.Tensor):
@@ -52,8 +57,6 @@ def build_attention_mask(attention_mask: torch.Tensor):
         000iii0i
         0000iii0
         ```
-
-        TODO: Since sequences are left-padded, we need to also mask out the padding tokens
     """
     if len(attention_mask.shape) != 2:
         raise ValueError(f"Invalid attention mask shape: {attention_mask.shape=}")
@@ -78,15 +81,27 @@ def build_attention_mask(attention_mask: torch.Tensor):
 
 if __name__ == "__main__":
     # See Appendix E.4 in the Sakana.ai paper
-    config = LlamaConfig(
-        vocab_size=32000,
-        num_hidden_layers=12,
-        hidden_size=768,
-        num_attention_heads=12,
-        intermediate_size=3072,
-    )
+    if USE_DBLOCK:
+        config = LlamaDiTConfig(
+            vocab_size=32000,
+            num_hidden_layers=12,
+            hidden_size=768,
+            num_attention_heads=12,
+            intermediate_size=3072,
+        )
 
-    model = LlamaForCausalLM(config)
+        model = LlamaDiTForCausalLM(config)
+    else:
+        config = LlamaConfig(
+            vocab_size=32000,
+            num_hidden_layers=12,
+            hidden_size=768,
+            num_attention_heads=12,
+            intermediate_size=3072,
+        )
+
+        model = LlamaForCausalLM(config)
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"{total_params=}")
@@ -123,9 +138,8 @@ if __name__ == "__main__":
             batch_size,
             SEQUENCE_LENGTH + 1,
         )
-        token_ids = torch.randint_like(
-            token_ids, 2
-        )  # TODO: Remove in prod Unpredictable
+        if DEBUG_LEARN_NOISE:
+            token_ids = torch.randint_like(token_ids, 2)
 
         masked_positions: torch.Tensor = tokens.attention_mask
         assert isinstance(
@@ -134,9 +148,8 @@ if __name__ == "__main__":
             batch_size,
             SEQUENCE_LENGTH + 1,
         )
-        masked_positions = torch.ones_like(
-            masked_positions
-        )  # TODO: Remove in prod Unpredictable
+        if DEBUG_LEARN_NOISE:
+            masked_positions = torch.ones_like(masked_positions)
 
         embedding_fn = model.model.embed_tokens
         assert isinstance(embedding_fn, nn.Embedding)
@@ -158,7 +171,10 @@ if __name__ == "__main__":
 
         # Add noise to noisy embeddings
         # TODO modify noise and base scaling to match the paper
-        noise_stdevs = torch.rand((batch_size, 1, 1))
+        noise_stdevs = (
+            torch.rand((batch_size, 1, 1)) * (DEBUG_NOISE_MAX - DEBUG_NOISE_MIN)
+            + DEBUG_NOISE_MIN
+        )
         noise = torch.randn_like(noisy_embeddings)
         noisy_embeddings = noise_stdevs * noise + (1 - noise_stdevs) * noisy_embeddings
 
