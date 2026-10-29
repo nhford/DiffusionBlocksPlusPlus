@@ -277,33 +277,36 @@ class ViTDBlockModel(ViTModel):
         z = torch.randn(bsz, hidden_size, device=self.device)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([x.shape[0]])
+
+        def get_slope(state, sigma):
+            logits = self.denoise(x, state, sigma)
+            probs = F.softmax(logits, dim=1)
+            denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
+            return (state - denoised) / sigma[:, None]
+
         for i in range(self.sigmas.shape[0] - 1):
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
-            # denoise at current 
-            logits = self.denoise(x, z, sigma)
-            probs = F.softmax(logits, dim=1)
-            denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
-            # to d
-            d_euler = (z - denoised) / sigma[:, None]
+            d_euler = get_slope(z, sigma)
             dt_euler = next_sigma - sigma
-            # euler step
             euler_step = z + dt_euler[:, None] * d_euler
 
             if ode == 'euler':
                 z = euler_step
             elif ode == 'heun':
-                # TODO: predict the next "denoised" at the position of the euler step
-                logits = self.denoise(x, euler_step, next_sigma) # TODO: should sigma be next sigma?
-                probs = F.softmax(logits, dim=1)
-                denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
+                # Explicit trapezoidal (Heun) method: evaluate the second slope
+                # at the full Euler predictor and the end of the interval.
+                d_heun = get_slope(euler_step, next_sigma)
+                z = z + dt_euler[:, None] * (d_euler + d_heun) / 2
 
-                # TODO: compute the average "denoising step"
-                d_heun = (euler_step - denoised) / next_sigma[:, None]
-                heun_step = z + dt_euler[:, None] * (d_euler + d_heun) / 2
-                
-                z = heun_step
-            
+            elif ode == 'midpoint':
+                # Explicit midpoint method: evaluate the slope at the Euler
+                # prediction halfway through both the state and sigma interval.
+                average_sigma = (next_sigma + sigma) / 2
+                midpoint = z + (dt_euler[:, None] / 2) * d_euler
+                d_midpoint = get_slope(midpoint, average_sigma)
+                z = z + dt_euler[:, None] * d_midpoint
+
         min_sigma = self.sigmas[-1].item()
         sigmas = torch.full((x.shape[0],), min_sigma, device=self.device)
         logits = self.denoise(x, z, sigmas)
