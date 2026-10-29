@@ -218,4 +218,3 @@ test.ipynb
 
 # Model checkpoints
 *.ckpt
-!results/*.log

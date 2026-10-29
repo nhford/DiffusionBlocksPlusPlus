@@ -1,86 +1,0 @@
-/opt/pytorch/lib64/python3.13/site-packages/torch/cuda/__init__.py:68: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
-  import pynvml  # type: ignore[import]
-Seed set to 42
-Experiment Name: 
-GPU available: True (cuda), used: True
-TPU available: False, using: 0 TPU cores
-HPU available: False, using: 0 HPUs
-wandb: WARNING The anonymous setting has no effect and will be removed in a future version.
-wandb: [wandb.login()] Loaded credentials for https://api.forge.coreweave.com from /home/ec2-user/.netrc.
-wandb: Currently logged in as: nord (nhford-carnegie-mellon-university) to https://api.forge.coreweave.com. Use `wandb login --relogin` to force relogin
-wandb: setting up run 6f095f97a1dc4bd8bfc845f4c802a1b1
-wandb: Tracking run with wandb version 0.31.0
-wandb: Run data is saved locally in logs/wandb/run-20261029_185343-6f095f97a1dc4bd8bfc845f4c802a1b1
-wandb: Run `wandb offline` to turn off syncing.
-wandb: Syncing run 6f095f97a1dc4bd8bfc845f4c802a1b1
-wandb: ⭐️ View project at https://forge.coreweave.com/wandb/nhford-carnegie-mellon-university/dblocks-cifar100
-wandb: 🚀 View run at https://forge.coreweave.com/wandb/nhford-carnegie-mellon-university/dblocks-cifar100/runs/6f095f97a1dc4bd8bfc845f4c802a1b1
-ViTDiTForImageClassification(
-  (vit): ViTDiTModel(
-    (embeddings): ViTDiTEmbeddings(
-      (patch_embeddings): ViTPatchEmbeddings(
-        (projection): Conv2d(3, 128, kernel_size=(4, 4), stride=(4, 4))
-      )
-      (dropout): Dropout(p=0.1, inplace=False)
-      (label_embeddings): Embedding(100, 128)
-    )
-    (time_embedder): TimestepEmbedder(
-      (mlp): Sequential(
-        (0): Linear(in_features=256, out_features=21, bias=True)
-        (1): SiLU()
-        (2): Linear(in_features=21, out_features=21, bias=True)
-      )
-    )
-    (encoder): ViTDiTEncoder(
-      (layer): ModuleList(
-        (0-11): 12 x ViTDiTLayer(
-          (attention): ViTAttention(
-            (attention): ViTSelfAttention(
-              (query): Linear(in_features=128, out_features=128, bias=True)
-              (key): Linear(in_features=128, out_features=128, bias=True)
-              (value): Linear(in_features=128, out_features=128, bias=True)
-            )
-            (output): ViTSelfOutput(
-              (dense): Linear(in_features=128, out_features=128, bias=True)
-              (dropout): Dropout(p=0.1, inplace=False)
-            )
-          )
-          (intermediate): ViTIntermediate(
-            (dense): Linear(in_features=128, out_features=3072, bias=True)
-            (intermediate_act_fn): GELUActivation()
-          )
-          (output): ViTOutput(
-            (dense): Linear(in_features=3072, out_features=128, bias=True)
-            (dropout): Dropout(p=0.1, inplace=False)
-          )
-          (layernorm_before): LayerNorm((128,), eps=1e-12, elementwise_affine=True, bias=True)
-          (layernorm_after): LayerNorm((128,), eps=1e-12, elementwise_affine=True, bias=True)
-          (adaLN_modulation): AdaLN(
-            (silu): SiLU()
-            (linear): Linear(in_features=21, out_features=768, bias=True)
-          )
-        )
-      )
-    )
-    (layernorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True, bias=True)
-  )
-  (classifier): Linear(in_features=128, out_features=100, bias=True)
-  (adaLN_modulation): AdaLN(
-    (silu): SiLU()
-    (linear): Linear(in_features=21, out_features=256, bias=True)
-  )
-)
-Restoring states from the checkpoint path at dblock-checkpoint-150epochs.ckpt
-/opt/pytorch/lib64/python3.13/site-packages/lightning/pytorch/callbacks/model_checkpoint.py:362: The dirpath has changed from '/content/DiffusionBlocksPlusPlus/logs/2026-10-27T05-11-13-dblock-cifar100-dblock-150epochs-monday' to '/home/ec2-user/project/logs', therefore `best_model_score`, `kth_best_model_path`, `kth_value`, `last_model_path` and `best_k_models` won't be reloaded. Only `best_model_path` will be reloaded.
-LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
-Loaded model weights from the checkpoint at dblock-checkpoint-150epochs.ckpt
-/opt/pytorch/lib64/python3.13/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
-Testing: |          | 0/? [00:00<?, ?it/s]Testing:   0%|          | 0/78 [00:00<?, ?it/s]Testing DataLoader 0:   0%|          | 0/78 [00:00<?, ?it/s]Testing DataLoader 0:   1%|▏         | 1/78 [00:00<00:31,  2.44it/s]Testing DataLoader 0:   3%|▎         | 2/78 [00:00<00:16,  4.70it/s]Testing DataLoader 0:   4%|▍         | 3/78 [00:00<00:11,  6.71it/s]Testing DataLoader 0:   5%|▌         | 4/78 [00:00<00:08,  8.54it/s]Testing DataLoader 0:   6%|▋         | 5/78 [00:00<00:07, 10.19it/s]Testing DataLoader 0:   8%|▊         | 6/78 [00:00<00:06, 11.71it/s]Testing DataLoader 0:   9%|▉         | 7/78 [00:00<00:05, 13.10it/s]Testing DataLoader 0:  10%|█         | 8/78 [00:00<00:04, 14.40it/s]Testing DataLoader 0:  12%|█▏        | 9/78 [00:00<00:04, 15.74it/s]Testing DataLoader 0:  13%|█▎        | 10/78 [00:00<00:04, 16.91it/s]Testing DataLoader 0:  14%|█▍        | 11/78 [00:00<00:03, 18.11it/s]Testing DataLoader 0:  15%|█▌        | 12/78 [00:00<00:03, 19.19it/s]Testing DataLoader 0:  17%|█▋        | 13/78 [00:00<00:03, 20.28it/s]Testing DataLoader 0:  18%|█▊        | 14/78 [00:00<00:03, 21.31it/s]Testing DataLoader 0:  19%|█▉        | 15/78 [00:00<00:02, 21.90it/s]Testing DataLoader 0:  21%|██        | 16/78 [00:00<00:02, 22.84it/s]Testing DataLoader 0:  22%|██▏       | 17/78 [00:00<00:02, 23.22it/s]Testing DataLoader 0:  23%|██▎       | 18/78 [00:00<00:02, 24.08it/s]Testing DataLoader 0:  24%|██▍       | 19/78 [00:00<00:02, 24.37it/s]Testing DataLoader 0:  26%|██▌       | 20/78 [00:00<00:02, 25.15it/s]Testing DataLoader 0:  27%|██▋       | 21/78 [00:00<00:02, 25.42it/s]Testing DataLoader 0:  28%|██▊       | 22/78 [00:00<00:02, 26.14it/s]Testing DataLoader 0:  29%|██▉       | 23/78 [00:00<00:02, 26.36it/s]Testing DataLoader 0:  31%|███       | 24/78 [00:00<00:01, 27.03it/s]Testing DataLoader 0:  32%|███▏      | 25/78 [00:00<00:01, 27.19it/s]Testing DataLoader 0:  33%|███▎      | 26/78 [00:00<00:01, 27.80it/s]Testing DataLoader 0:  35%|███▍      | 27/78 [00:00<00:01, 27.94it/s]Testing DataLoader 0:  36%|███▌      | 28/78 [00:00<00:01, 28.52it/s]Testing DataLoader 0:  37%|███▋      | 29/78 [00:01<00:01, 28.66it/s]Testing DataLoader 0:  38%|███▊      | 30/78 [00:01<00:01, 29.14it/s]Testing DataLoader 0:  40%|███▉      | 31/78 [00:01<00:01, 29.23it/s]Testing DataLoader 0:  41%|████      | 32/78 [00:01<00:01, 29.73it/s]Testing DataLoader 0:  42%|████▏     | 33/78 [00:01<00:01, 29.80it/s]Testing DataLoader 0:  44%|████▎     | 34/78 [00:01<00:01, 30.29it/s]Testing DataLoader 0:  45%|████▍     | 35/78 [00:01<00:01, 30.34it/s]Testing DataLoader 0:  46%|████▌     | 36/78 [00:01<00:01, 30.78it/s]Testing DataLoader 0:  47%|████▋     | 37/78 [00:01<00:01, 30.81it/s]Testing DataLoader 0:  49%|████▊     | 38/78 [00:01<00:01, 31.24it/s]Testing DataLoader 0:  50%|█████     | 39/78 [00:01<00:01, 31.28it/s]Testing DataLoader 0:  51%|█████▏    | 40/78 [00:01<00:01, 31.69it/s]Testing DataLoader 0:  53%|█████▎    | 41/78 [00:01<00:01, 31.75it/s]Testing DataLoader 0:  54%|█████▍    | 42/78 [00:01<00:01, 32.10it/s]Testing DataLoader 0:  55%|█████▌    | 43/78 [00:01<00:01, 32.09it/s]Testing DataLoader 0:  56%|█████▋    | 44/78 [00:01<00:01, 32.46it/s]Testing DataLoader 0:  58%|█████▊    | 45/78 [00:01<00:01, 32.49it/s]Testing DataLoader 0:  59%|█████▉    | 46/78 [00:01<00:00, 32.81it/s]Testing DataLoader 0:  60%|██████    | 47/78 [00:01<00:00, 32.85it/s]Testing DataLoader 0:  62%|██████▏   | 48/78 [00:01<00:00, 33.14it/s]Testing DataLoader 0:  63%|██████▎   | 49/78 [00:01<00:00, 33.16it/s]Testing DataLoader 0:  64%|██████▍   | 50/78 [00:01<00:00, 33.43it/s]Testing DataLoader 0:  65%|██████▌   | 51/78 [00:01<00:00, 33.45it/s]Testing DataLoader 0:  67%|██████▋   | 52/78 [00:01<00:00, 33.73it/s]Testing DataLoader 0:  68%|██████▊   | 53/78 [00:01<00:00, 33.75it/s]Testing DataLoader 0:  69%|██████▉   | 54/78 [00:01<00:00, 34.01it/s]Testing DataLoader 0:  71%|███████   | 55/78 [00:01<00:00, 34.00it/s]Testing DataLoader 0:  72%|███████▏  | 56/78 [00:01<00:00, 34.26it/s]Testing DataLoader 0:  73%|███████▎  | 57/78 [00:01<00:00, 34.28it/s]Testing DataLoader 0:  74%|███████▍  | 58/78 [00:01<00:00, 34.51it/s]Testing DataLoader 0:  76%|███████▌  | 59/78 [00:01<00:00, 34.52it/s]Testing DataLoader 0:  77%|███████▋  | 60/78 [00:01<00:00, 34.74it/s]Testing DataLoader 0:  78%|███████▊  | 61/78 [00:01<00:00, 34.77it/s]Testing DataLoader 0:  79%|███████▉  | 62/78 [00:01<00:00, 34.95it/s]Testing DataLoader 0:  81%|████████  | 63/78 [00:01<00:00, 34.97it/s]Testing DataLoader 0:  82%|████████▏ | 64/78 [00:01<00:00, 35.16it/s]Testing DataLoader 0:  83%|████████▎ | 65/78 [00:01<00:00, 35.17it/s]Testing DataLoader 0:  85%|████████▍ | 66/78 [00:01<00:00, 35.36it/s]Testing DataLoader 0:  86%|████████▌ | 67/78 [00:01<00:00, 35.37it/s]Testing DataLoader 0:  87%|████████▋ | 68/78 [00:01<00:00, 35.55it/s]Testing DataLoader 0:  88%|████████▊ | 69/78 [00:01<00:00, 35.57it/s]Testing DataLoader 0:  90%|████████▉ | 70/78 [00:01<00:00, 35.69it/s]Testing DataLoader 0:  91%|█████████ | 71/78 [00:01<00:00, 35.74it/s]Testing DataLoader 0:  92%|█████████▏| 72/78 [00:02<00:00, 35.88it/s]Testing DataLoader 0:  94%|█████████▎| 73/78 [00:02<00:00, 35.90it/s]Testing DataLoader 0:  95%|█████████▍| 74/78 [00:02<00:00, 36.05it/s]Testing DataLoader 0:  96%|█████████▌| 75/78 [00:02<00:00, 36.06it/s]Testing DataLoader 0:  97%|█████████▋| 76/78 [00:02<00:00, 36.20it/s]Testing DataLoader 0:  99%|█████████▊| 77/78 [00:02<00:00, 36.22it/s]Testing DataLoader 0: 100%|██████████| 78/78 [00:02<00:00, 36.44it/s]Testing DataLoader 0: 100%|██████████| 78/78 [00:02<00:00, 35.54it/s]
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃        Test metric        ┃       DataLoader 0        ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│         test/acc          │    0.3845152258872986     │
-│          test/f1          │    0.3845152258872986     │
-└───────────────────────────┴───────────────────────────┘
-[1;34mwandb[0m: 
-[1;34mwandb[0m: 🚀 View run [33m6f095f97a1dc4bd8bfc845f4c802a1b1[0m at: [34mhttps://forge.coreweave.com/wandb/nhford-carnegie-mellon-university/dblocks-cifar100/runs/6f095f97a1dc4bd8bfc845f4c802a1b1[0m
