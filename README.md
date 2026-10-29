@@ -100,6 +100,15 @@ CKPT_PATH="logs/path-to-last.ckpt"
 uv run main.py test cifar100 --model_type dblock --ckpt_path $CKPT
 ```
 
+Set `--num_inference_steps` to use more inference steps with an existing
+checkpoint. Keep `--num_blocks` equal to the block count used during training;
+the inference step count is independent and defaults to that block count.
+
+```bash
+uv run main.py test cifar100 --model_type dblock \
+    --ckpt_path "$CKPT_PATH" --num_blocks 3 --num_inference_steps 12
+```
+
 ## Acknowledgement
 
 The implementation of Vision Transformer in [vit.py](./vit.py) is based on [HuggingFace Transformers](https://github.com/huggingface/transformers). And, the implementation of EDM is based on [Stability-AI/generative-models](https://github.com/Stability-AI/generative-models).  

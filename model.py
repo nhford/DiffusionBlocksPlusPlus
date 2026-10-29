@@ -117,7 +117,13 @@ class ViTDBlockModel(ViTModel):
         self.class_dropout_prob = (
             args.class_dropout_prob if self.cfg_scale > 0.0 else 0.0
         )
-        self.num_inference_steps = self.args.num_inference_steps or self.args.num_blocks
+        self.num_inference_steps = (
+            self.args.num_blocks
+            if self.args.num_inference_steps is None
+            else self.args.num_inference_steps
+        )
+        if self.num_inference_steps < 1:
+            raise ValueError("num_inference_steps must be positive")
         self.block_sigmas = get_block_sigmas(num_layers=self.args.num_blocks)
         self.layer_assignment = None
         self.register_buffer(
@@ -125,6 +131,7 @@ class ViTDBlockModel(ViTModel):
             get_discrete_sigmas(num_steps=self.num_inference_steps, dblock=True).to(
                 self.device
             ),
+            persistent=False,
         )
         self.save_hyperparameters(
             {
@@ -137,6 +144,18 @@ class ViTDBlockModel(ViTModel):
 
         # add diffusion step method
         self.test_kwargs = {}
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict,
+        missing_keys, unexpected_keys, error_msgs,
+    ):
+        # Older checkpoints saved this derived schedule. Keep the schedule built
+        # from the current inference settings, regardless of its saved length.
+        state_dict.pop(prefix + "sigmas", None)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
 
     def configure_model(self):
         self.model = load_vit(
