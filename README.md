@@ -30,13 +30,13 @@ The model checkpoints are saved in `logs` folder.
 **Baseline (ViT):**
 
 ```bash
-uv run main.py train cifar100 --model_type vit
+uv run python -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 --model_type vit
 ```
 
 **DiffusionBlocks:**
 
 ```bash
-uv run main.py train cifar100 --model_type dblock
+uv run python -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 --model_type dblock
 ```
 
 * **NOTE:** the total epochs in DiffusionBlocks is multiplied by the number of blocks to align the total number of iterations with the baseline as one step in DiffusionBlocks corresponds to training for one block.
@@ -53,7 +53,7 @@ EPOCHS=1000
 POSTFIX="-rand-augment"
 WARMUP_STEPS=3900
 MODEL_TYPE="dblock"
-srun uv run main.py train cifar100 \
+srun uv run python -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 \
     --model_type $MODEL_TYPE \
     --batch_size $BATCH_SIZE --num_epochs $EPOCHS --postfix=$POSTFIX \
     --scheduler_type cosine_with_min_lr --num_warmup_steps $WARMUP_STEPS --lr 5e-4 \
@@ -69,7 +69,7 @@ EPOCHS=1000
 POSTFIX="-rand-augment"
 WARMUP_STEPS=$((3900 * 3)) # 3 indicates the number of blocks
 MODEL_TYPE="dblock"
-srun uv run main.py train cifar100 \
+srun uv run python -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 \
     --model_type $MODEL_TYPE \
     --batch_size $BATCH_SIZE --num_epochs $EPOCHS --postfix=$POSTFIX \
     --scheduler_type cosine_with_min_lr --num_warmup_steps $WARMUP_STEPS --lr 5e-4 \
@@ -85,14 +85,14 @@ srun uv run main.py train cifar100 \
 
 ```bash
 CKPT_PATH="logs/path-to-last.ckpt"
-uv run main.py test cifar100 --model_type vit --ckpt_path $CKPT
+uv run python -m src.diffusion_blocks_plus_plus.deploy_vit test cifar100 --model_type vit --ckpt_path $CKPT
 ```
 
 **DiffusionBlocks:**
 
 ```bash
 CKPT_PATH="logs/path-to-last.ckpt"
-uv run main.py test cifar100 --model_type dblock --ckpt_path $CKPT
+uv run python -m src.diffusion_blocks_plus_plus.deploy_vit test cifar100 --model_type dblock --ckpt_path $CKPT
 ```
 
 ## Acknowledgement

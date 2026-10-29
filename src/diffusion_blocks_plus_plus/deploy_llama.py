@@ -1,33 +1,26 @@
-import os
 import argparse
 import datetime
 import json
-import torch
+import os
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
-from lightning.pytorch.strategies import DDPStrategy, DeepSpeedStrategy
+from lightning.pytorch.strategies import DDPStrategy
 
-from data import load_data
-from model import load_model
-
-torch.set_float32_matmul_precision("high")
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
+from .llama.lightning_modules import load_model
+from .llama.data import load_data
 
 
 def main(args):
     L.seed_everything(args.seed)
 
     data = load_data(args)
-    args.image_size = data.image_size
-    args.num_labels = data.num_labels
     model = load_model(args)
     if args.ckpt_path is not None:
         nowname = os.path.basename(os.path.dirname(args.ckpt_path))
     else:
         now = datetime.datetime.now(
-            tz=datetime.timezone(datetime.timedelta(hours=9), name="JST")
+            tz=datetime.timezone(datetime.timedelta(hours=9), name="EST")
         ).strftime("%Y-%m-%dT%H-%M-%S")
         nowname = now + f"-{args.model_type}" + args.postfix
         if nowname.startswith("_"):
@@ -35,7 +28,7 @@ def main(args):
     print("Experiment Name:", nowname)
     logdir = os.path.join("logs", nowname)
     logger = WandbLogger(
-        project=f"dblocks-{args.data_name}",
+        project=f"dblocks-llama-{args.data_name}",
         name=nowname,
         version=nowname,
         offline=args.debug,
@@ -43,10 +36,11 @@ def main(args):
         # group=f"{args.data_name}",
     )
     trainer = L.Trainer(
-        max_epochs=args.num_epochs
-        if args.model_type != "dblock"
-        else args.num_epochs
-        * args.num_blocks,  # to align total number of iterations across the entire network because one step corresponds to one block
+        max_epochs=(
+            args.num_epochs
+            if args.model_type != "dblock"
+            else args.num_epochs * args.num_blocks
+        ),  # to align total number of iterations across the entire network because one step corresponds to one block
         check_val_every_n_epoch=args.save_every_n_epochs,
         callbacks=[
             ModelCheckpoint(
@@ -55,22 +49,24 @@ def main(args):
                 mode="max",
                 save_top_k=args.save_top_k,
                 save_on_train_epoch_end=True,
-                every_n_epochs=args.save_every_n_epochs
-                if data.val_key is None
-                else None,
+                every_n_epochs=(
+                    args.save_every_n_epochs if data.val_key is None else None
+                ),
                 save_last=True,
             ),
             LearningRateMonitor(logging_interval="step"),
         ],
         accumulate_grad_batches=args.accumulate_grad_batches,
         gradient_clip_val=1.0,
-        strategy=DDPStrategy(find_unused_parameters=args.model_type == "dblock")
-        if args.devices > 1
-        else "auto",
+        strategy=(
+            DDPStrategy(find_unused_parameters=args.model_type == "dblock")
+            if args.devices > 1
+            else "auto"
+        ),
         devices=args.devices,
         logger=logger,
         num_sanity_val_steps=0,
-        # precision="bf16-mixed",
+        precision="bf16-mixed",
     )
     if args.stage == "train":
         trainer.fit(model, data, ckpt_path=args.ckpt_path)
@@ -85,9 +81,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", type=str, default="train", choices=["train", "test"])
     parser.add_argument("data_name", type=str, default="cifar100")
-    parser.add_argument(
-        "--model_type", type=str, default="vit", choices=["vit", "dblock"]
-    )
+    parser.add_argument("--model_type", type=str, default="llama", choices=["llama"])
     parser.add_argument("--devices", type=int, default=1)
     parser.add_argument("--num_epochs", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=128)

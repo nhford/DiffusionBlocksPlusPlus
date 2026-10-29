@@ -1,5 +1,5 @@
 [project]
-name = "DiffusionBlocks"
+name = "diffusion_blocks_plus_plus"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -8,13 +8,15 @@ dependencies = [
     "torch==2.6.0",
     "torchvision==0.21.0",
     "lightning==2.5.0",
-    "wandb==0.18.6",
+    "wandb==0.30.0",
     "transformers==4.52.4",
     "datasets==3.5.0",
     "huggingface-hub[hf-xet]>=0.31.2",
     "hf-transfer>=0.1.9",
     "scipy>=1.16.2",
     "flash-attn==2.7.4.post1",
+    "isort>=9.0.2",
+    "matplotlib>=3.11.2",
 ]
 
 
@@ -30,3 +32,6 @@ torch = [
 torchvision = [
     { index = "pytorch-cu124", marker = "sys_platform == 'linux'"}
 ]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
