@@ -5,7 +5,6 @@ import pandas
 import torch
 import torch.nn.functional as F
 from datasets import dataset_dict, load_dataset
-from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,7 +17,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .plot_data import generate_plot
 
-SEQUENCE_LENGTH = 256  # TODO: 256 is prod
+SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
 LEARNING_RATE = 0.001
 EMBED_TIMESTEPS = False
@@ -28,6 +27,7 @@ DEBUG_NOISE_MIN = 0.5
 DEBUG_NOISE_MAX = 1
 DEBUG_SMALL_DATASET = True
 DEBUG_FORCE_COND = False
+DEBUG_LOG_VRAM = True
 
 
 def build_attention_mask(attention_mask: torch.Tensor):
@@ -90,6 +90,10 @@ def build_attention_mask(attention_mask: torch.Tensor):
     return result.to(attention_mask.device)
 
 
+def get_vram_usage():
+    return torch.cuda.memory_allocated()
+
+
 def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoader):
     for i in range(model.num_blocks):
         model.unload_block(i)
@@ -110,8 +114,15 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
     results = []
     progress = tqdm(dataloader)
     for batch_idx, batch in enumerate(progress):
+        vram_usage_dict = {"model": 0, "activations": 0, "gradients": 0, "optimizer": 0}
+        if DEBUG_LOG_VRAM:
+            for param in model.loaded_parameters():
+                vram_usage_dict["model"] += param.numel() * param.element_size()
+
         batch_size = len(batch["input_ids"])
 
+        if DEBUG_LOG_VRAM:
+            vram_usage_dict["activations"] -= get_vram_usage()
         token_ids: torch.Tensor = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor) and token_ids.shape == (
             batch_size,
@@ -182,7 +193,7 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
         # TODO: Move the responsibility of block selection into a method of model.
         current_block = model.blocks_loaded[block_idx]
         assert current_block is not None
-        print(f"A: {torch.cuda.mem_get_info()}")
+
         outputs: CausalLMOutputWithPast = current_block(
             inputs_embeds=input_embeddings,
             attention_mask=attention_mask,
@@ -193,6 +204,9 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
                 else {}
             ),
         )
+        if DEBUG_LOG_VRAM:
+            vram_usage_dict["activations"] += get_vram_usage()
+
         logits = outputs.logits
         assert logits is not None and logits.shape == (
             batch_size,
@@ -208,17 +222,34 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
         loss = loss * masked_positions[:, 1:]
         loss = loss.sum() / masked_positions[:, 1:].sum()
 
-        print(f"B: {torch.cuda.mem_get_info()}")
         loss.backward()
-        print(f"C: {torch.cuda.mem_get_info()}")
+
+        if DEBUG_LOG_VRAM:
+            for param in model.loaded_parameters():
+                grad = param.grad
+                if grad is not None:
+                    vram_usage_dict["gradients"] += grad.numel() * grad.element_size()
+
         optimizer.step()
-        print(f"D: {torch.cuda.mem_get_info()}")
+
+        if DEBUG_LOG_VRAM:
+            for optimizer_params in optimizer.state.values():
+                if not isinstance(optimizer_params, dict):
+                    continue
+                for state_entry in optimizer_params.values():
+                    vram_usage_dict["optimizer"] += (
+                        state_entry.numel() * state_entry.element_size()
+                    )
+
         optimizer.zero_grad()
-        print(f"E: {torch.cuda.mem_get_info()}")
 
-
-        results.append({"batch_idx": batch_idx, "loss": loss.item()})
-        progress.set_postfix({"loss": loss.item()})
+        vram_usage_dict = {
+            **vram_usage_dict,
+            "total": sum(vram_usage_dict.values()),
+        }
+        vram_usage_dict = {"vram_" + k: v / 1e9 for k, v in vram_usage_dict.items()}
+        results.append({"batch_idx": batch_idx, "loss": loss.item(), **vram_usage_dict})
+        progress.set_postfix({"loss": loss.item(), **vram_usage_dict})
     return results
 
 
@@ -244,18 +275,20 @@ if __name__ == "__main__":
         train_dataset = load_dataset("roneneldan/TinyStories", split="train")
     assert isinstance(train_dataset, dataset_dict.Dataset)
 
-    train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    train_dataset = train_dataset.map(
+        tokenize_function, batched=True, remove_columns=["text"]
+    )
     train_dataset = train_dataset.with_format("torch")
     dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
     # See Appendix E.4 in the Sakana.ai paper
     config = LlamaDiTConfig(
         vocab_size=32000,
-        num_hidden_layers=24,
+        num_hidden_layers=48,
         hidden_size=768,
         num_attention_heads=12,
         intermediate_size=3072,
-        num_blocks=2,
+        num_blocks=4,
         use_timestep_embedding=EMBED_TIMESTEPS,
     )
 
