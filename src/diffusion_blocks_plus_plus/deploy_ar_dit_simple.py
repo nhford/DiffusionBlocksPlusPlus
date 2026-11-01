@@ -11,8 +11,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
-    LlamaConfig,
-    LlamaForCausalLM,
     LlamaTokenizerFast,
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -20,17 +18,16 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .plot_data import generate_plot
 
-SEQUENCE_LENGTH = 1  # TODO: 256 is prod
-BATCH_SIZE = 100  # TODO: Should be 256 as in original paper
+SEQUENCE_LENGTH = 256  # TODO: 256 is prod
+BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
 LEARNING_RATE = 0.001
-USE_DBLOCK = True
 EMBED_TIMESTEPS = False
 
-DEBUG_LEARN_NOISE = True
-DEBUG_NOISE_MIN = 1
+DEBUG_LEARN_NOISE = False
+DEBUG_NOISE_MIN = 0.5
 DEBUG_NOISE_MAX = 1
 DEBUG_SMALL_DATASET = True
-DEBUG_FORCE_COND = True
+DEBUG_FORCE_COND = False
 
 
 def build_attention_mask(attention_mask: torch.Tensor):
@@ -77,7 +74,6 @@ def build_attention_mask(attention_mask: torch.Tensor):
     result = torch.full(
         (num_batches, 1, seq_len * 2, seq_len * 2),
         float("-inf"),
-        device=attention_mask.device,
     )
 
     for batch in range(num_batches):
@@ -91,73 +87,32 @@ def build_attention_mask(attention_mask: torch.Tensor):
                     result[batch, 0, query_idx, key_idx] = 0
                     result[batch, 0, query_idx + seq_len, key_idx] = 0
 
-    return result
+    return result.to(attention_mask.device)
 
 
-if __name__ == "__main__":
+def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoader):
+    for i in range(model.num_blocks):
+        model.unload_block(i)
+    model.load_block(block_idx)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to_device(device)
 
-    # See Appendix E.4 in the Sakana.ai paper
-    if USE_DBLOCK:
-        config = LlamaDiTConfig(
-            vocab_size=32000,
-            num_hidden_layers=12,
-            hidden_size=768,
-            num_attention_heads=12,
-            intermediate_size=3072,
-            use_timestep_embedding=EMBED_TIMESTEPS,
-        )
-
-        model = LlamaDiTForCausalLM(config)
-    else:
-        config = LlamaConfig(
-            vocab_size=32000,
-            num_hidden_layers=12,
-            hidden_size=768,
-            num_attention_heads=12,
-            intermediate_size=3072,
-        )
-
-        model = LlamaForCausalLM(config)
-
-    model = model.to(device)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.loaded_parameters())
+    trainable_params = sum(
+        p.numel() for p in model.loaded_parameters() if p.requires_grad
+    )
     print(f"{total_params=}")
     print(f"{trainable_params=}")
 
-    tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
-    assert isinstance(tokenizer, LlamaTokenizerFast)
-    # This is because the attention mask must not attend to padding tokens.
-    tokenizer.padding_side = "right"
-    tokenizer.add_eos_token = True
-
-    if DEBUG_SMALL_DATASET:
-        train_dataset = load_dataset("roneneldan/TinyStories", split="train[:10000]")
-    else:
-        train_dataset = load_dataset("roneneldan/TinyStories", split="train")
-    assert isinstance(train_dataset, dataset_dict.Dataset)
-    dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
-
-    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
+    optimizer = AdamW(model.loaded_parameters(), lr=LEARNING_RATE)
 
     results = []
     progress = tqdm(dataloader)
     for batch_idx, batch in enumerate(progress):
-        batch_text: list[str] = batch["text"]
+        batch_size = len(batch["input_ids"])
 
-        batch_size = len(batch_text)
-
-        tokens = tokenizer(
-            batch_text,
-            padding="max_length",
-            truncation=True,
-            max_length=SEQUENCE_LENGTH + 1,
-            return_tensors="pt",
-        )
-
-        token_ids: torch.Tensor = tokens.input_ids.to(device)
+        token_ids: torch.Tensor = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor) and token_ids.shape == (
             batch_size,
             SEQUENCE_LENGTH + 1,
@@ -165,7 +120,7 @@ if __name__ == "__main__":
         if DEBUG_LEARN_NOISE:
             token_ids = torch.randint_like(token_ids, 2)
 
-        masked_positions: torch.Tensor = tokens.attention_mask.to(device)
+        masked_positions: torch.Tensor = batch["attention_mask"].to(device)
         assert isinstance(
             masked_positions, torch.Tensor
         ) and masked_positions.shape == (
@@ -175,17 +130,14 @@ if __name__ == "__main__":
         if DEBUG_LEARN_NOISE:
             masked_positions = torch.ones_like(masked_positions)
 
-        embedding_fn = model.model.embed_tokens
-        assert isinstance(embedding_fn, nn.Embedding)
-
-        clean_embeddings: torch.Tensor = embedding_fn(token_ids[:, :-1])
+        clean_embeddings: torch.Tensor = model.input_embedding(token_ids[:, :-1])
         clean_embeddings = F.normalize(clean_embeddings, p=2, dim=-1)
         assert clean_embeddings.shape == (
             batch_size,
             SEQUENCE_LENGTH,
             config.hidden_size,
         )
-        noisy_embeddings: torch.Tensor = embedding_fn(token_ids[:, 1:])
+        noisy_embeddings: torch.Tensor = model.input_embedding(token_ids[:, 1:])
         noisy_embeddings = F.normalize(noisy_embeddings, p=2, dim=-1)
         assert noisy_embeddings.shape == (
             batch_size,
@@ -227,14 +179,17 @@ if __name__ == "__main__":
         ).to(device)
         position_ids = position_ids.view((1, SEQUENCE_LENGTH * 2))
 
-        optimizer.zero_grad()
-        outputs: CausalLMOutputWithPast = model(
+        # TODO: Move the responsibility of block selection into a method of model.
+        current_block = model.blocks_loaded[block_idx]
+        assert current_block is not None
+        print(f"A: {torch.cuda.mem_get_info()}")
+        outputs: CausalLMOutputWithPast = current_block(
             inputs_embeds=input_embeddings,
             attention_mask=attention_mask,
             position_ids=position_ids,
             **(
                 dict(timestep=noise_stdevs.view((batch_size,)))
-                if EMBED_TIMESTEPS and USE_DBLOCK
+                if EMBED_TIMESTEPS
                 else {}
             ),
         )
@@ -252,17 +207,68 @@ if __name__ == "__main__":
         loss = F.cross_entropy(denoise_logits, targets, reduction="none")
         loss = loss * masked_positions[:, 1:]
         loss = loss.sum() / masked_positions[:, 1:].sum()
+
+        print(f"B: {torch.cuda.mem_get_info()}")
         loss.backward()
+        print(f"C: {torch.cuda.mem_get_info()}")
         optimizer.step()
+        print(f"D: {torch.cuda.mem_get_info()}")
+        optimizer.zero_grad()
+        print(f"E: {torch.cuda.mem_get_info()}")
+
 
         results.append({"batch_idx": batch_idx, "loss": loss.item()})
         progress.set_postfix({"loss": loss.item()})
+    return results
 
-    name = datetime.now().isoformat()
-    os.makedirs("./data", exist_ok=True)
-    results = pandas.DataFrame(results)
-    results.to_csv(f"./data/{name}.csv")
 
-    generate_plot(name)
+if __name__ == "__main__":
+    tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
+    assert isinstance(tokenizer, LlamaTokenizerFast)
+    # This is because the attention mask must not attend to padding tokens.
+    tokenizer.padding_side = "right"
+    tokenizer.add_eos_token = True
 
-    model.save_pretrained(f"./checkpoints/{name}.ckpt")
+    def tokenize_function(examples):
+        result = tokenizer(
+            examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=SEQUENCE_LENGTH + 1,
+        )
+        return result
+
+    if DEBUG_SMALL_DATASET:
+        train_dataset = load_dataset("roneneldan/TinyStories", split="train[:1000]")
+    else:
+        train_dataset = load_dataset("roneneldan/TinyStories", split="train")
+    assert isinstance(train_dataset, dataset_dict.Dataset)
+
+    train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    train_dataset = train_dataset.with_format("torch")
+    dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
+
+    # See Appendix E.4 in the Sakana.ai paper
+    config = LlamaDiTConfig(
+        vocab_size=32000,
+        num_hidden_layers=24,
+        hidden_size=768,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        num_blocks=2,
+        use_timestep_embedding=EMBED_TIMESTEPS,
+    )
+
+    model = LlamaDiTForCausalLM(config)
+
+    for i in range(model.num_blocks):
+        results = train_block(model, i, dataloader)
+
+        name = datetime.now().isoformat() + "_" + str(i)
+        os.makedirs("./data", exist_ok=True)
+        results = pandas.DataFrame(results)
+        results.to_csv(f"./data/{name}.csv")
+
+        generate_plot(name)
+
+        model.save_checkpoint(f"./checkpoints/{name}")

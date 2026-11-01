@@ -21,7 +21,11 @@
 # This code is adapted from the Hugging Face implementation of Llama 2, which can be found below.
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 
+import gc
 import math
+import os
+import shutil
+import tempfile
 from typing import Optional, Tuple, Union, Unpack
 from venv import logger
 
@@ -170,6 +174,8 @@ class LlamaDiTConfig(LlamaConfig):
         head_dim=None,
         cond_hidden_size: int | None = None,
         use_timestep_embedding=True,
+        num_blocks=2,
+        block_boundaries: list[float] | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -204,6 +210,16 @@ class LlamaDiTConfig(LlamaConfig):
             self.cond_hidden_size = cond_hidden_size
 
         self.use_timestep_embedding = use_timestep_embedding
+        self.num_blocks = num_blocks
+        if self.num_hidden_layers % self.num_blocks != 0:
+            raise ValueError(
+                f"The number of blocks ({self.num_blocks}) should divide the number of hidden layers ({self.num_hidden_layers})."
+            )
+        if block_boundaries is None:
+            # TODO We use equal noise partitioning for now.
+            self.block_boundaries = [
+                x / num_hidden_layers for x in range(1, self.num_hidden_layers)
+            ]
 
 
 class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
@@ -291,14 +307,12 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.num_hidden_layers = config.num_hidden_layers // config.num_blocks
 
-        self.embed_tokens = nn.Embedding(
-            config.vocab_size, config.hidden_size, self.padding_idx
-        )
         self.layers = nn.ModuleList(
             [
                 LlamaDiTDecoderLayer(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
+                for layer_idx in range(self.num_hidden_layers)
             ]
         )
         self.use_timestep_embedding = config.use_timestep_embedding
@@ -409,7 +423,7 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         if self.use_timestep_embedding:
             timestep_embeddings = self.time_embedder(timestep)
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for decoder_layer in self.layers[: self.num_hidden_layers]:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -594,16 +608,18 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         return causal_mask
 
 
-class LlamaDiTForCausalLM(LlamaPreTrainedModel):
+class LlamaDiTBlockForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = LlamaDiTModel(config)
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.hidden_size = config.hidden_size
+
+        self.model = LlamaDiTModel(config)
+        self.lm_head = nn.Linear(self.hidden_size, self.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -715,3 +731,90 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+
+class LlamaDiTForCausalLM:
+    """DiffusionBlocks implementation with support for dynamic loading.
+
+    Note that because this module does weird things with weight offloading, this is not a PyTorch module.
+    """
+
+    def __init__(self, config: LlamaDiTConfig, save_path: str | None = None):
+        self.vocab_size = config.vocab_size
+        self.hidden_size = config.hidden_size
+        self.padding_idx = config.pad_token_id
+        self.num_blocks = config.num_blocks
+        if save_path is None:
+            self.save_path = tempfile.mkdtemp(prefix="llama_dit_for_causal_lm")
+        else:
+            self.save_path = save_path
+        self.block_boundaries = [*config.block_boundaries]
+
+        # Embedding is always loaded in memory
+        embedding_path = f"{self.save_path}/input_embedding.pth"
+        self.input_embedding = nn.Embedding(
+            self.vocab_size, self.hidden_size, self.padding_idx
+        )
+        if os.path.exists(embedding_path):
+            self.input_embedding.load_state_dict(torch.load(embedding_path))
+
+        for block_idx in range(self.num_blocks):
+            block_path = f"{self.save_path}/{block_idx}"
+            if not os.path.isdir(block_path):
+                block = LlamaDiTBlockForCausalLM(config)
+                block.save_pretrained(block_path)
+                del block
+
+        # By default, no blocks are loaded
+        self.blocks_loaded: list[LlamaDiTBlockForCausalLM | None] = [
+            None
+        ] * self.num_blocks
+
+    def load_block(self, block_idx: int):
+        block_path = f"{self.save_path}/{block_idx}"
+        if self.blocks_loaded[block_idx] is None:
+            self.blocks_loaded[block_idx] = LlamaDiTBlockForCausalLM.from_pretrained(
+                block_path
+            )
+
+    def save_block(self, block_idx: int):
+        block_path = f"{self.save_path}/{block_idx}"
+        current_block = self.blocks_loaded[block_idx]
+        if current_block is not None:
+            current_block.save_pretrained(block_path)
+
+    def save_embedding(self):
+        embedding_path = f"{self.save_path}/input_embedding.pth"
+        torch.save(self.input_embedding.state_dict, embedding_path)
+
+    def unload_block(self, block_idx: int):
+        self.save_block(block_idx)
+        current_block = self.blocks_loaded[block_idx]
+        if current_block is not None:
+            current_block.to("cpu")
+            del current_block
+        self.blocks_loaded[block_idx] = None
+        gc.collect()
+        torch.cuda.empty_cache
+
+
+    def save_checkpoint(self, path: str):
+        for i in range(self.num_blocks):
+            self.save_block(i)
+        self.save_embedding()
+        shutil.copytree(self.save_path, path)
+
+    def to_device(self, device):
+        for i in range(self.num_blocks):
+            current_block = self.blocks_loaded[i]
+            if current_block is not None:
+                current_block.to(device)
+        self.input_embedding.to(device)
+
+    def loaded_parameters(self):
+        yield from self.input_embedding.parameters()
+        for i in range(self.num_blocks):
+            current_block = self.blocks_loaded[i]
+            if current_block is not None:
+                yield from current_block.parameters()
+
