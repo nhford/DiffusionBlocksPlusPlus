@@ -309,11 +309,16 @@ class ViTDBlockModel(ViTModel):
         z = torch.randn(bsz, hidden_size, device=self.device)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([x.shape[0]])
+        
+        # Match the unit-norm class embeddings used as clean training targets.
+        class_embeddings = self.normalize_embeddings(
+            self.model.get_input_embeddings().weight
+        )
 
         def get_slope(state, sigma):
             logits = self.denoise(x, state, sigma)
             probs = F.softmax(logits, dim=1)
-            denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
+            denoised = F.linear(probs, class_embeddings.t())
             return (state - denoised) / sigma[:, None]
 
         for i in range(self.sigmas.shape[0] - 1):
