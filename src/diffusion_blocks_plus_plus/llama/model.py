@@ -36,17 +36,12 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-)
-from transformers.models.llama.modeling_llama import (
-    KwargsForCausalLM,
-    LlamaAttention,
-    LlamaMLP,
-    LlamaRMSNorm,
-    LlamaRotaryEmbedding,
-)
+from transformers.modeling_outputs import (BaseModelOutputWithPast,
+                                           CausalLMOutputWithPast)
+from transformers.models.llama.modeling_llama import (KwargsForCausalLM,
+                                                      LlamaAttention, LlamaMLP,
+                                                      LlamaRMSNorm,
+                                                      LlamaRotaryEmbedding)
 
 
 class AdaRMS(nn.Module):
@@ -218,7 +213,7 @@ class LlamaDiTConfig(LlamaConfig):
         if block_boundaries is None:
             # TODO We use equal noise partitioning for now.
             self.block_boundaries = [
-                x / num_hidden_layers for x in range(1, self.num_hidden_layers)
+                x / num_blocks * 100 + 0.01 for x in range(0, self.num_blocks + 1)
             ]
 
 
@@ -317,11 +312,17 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         )
         self.use_timestep_embedding = config.use_timestep_embedding
         if self.use_timestep_embedding:
+            # We add this so that large norms from noise process don't throw off our results.
+            self.input_norm = AdaRMS(
+                config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
+            )
             self.norm = AdaRMS(
                 config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
             )
             self.time_embedder = TimestepEmbedder(config.cond_hidden_size)
         else:
+            # We add this so that large norms from noise process don't throw off our results.
+            self.input_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
             self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
@@ -422,6 +423,11 @@ class LlamaDiTModel(LlamaPreTrainedModel):
 
         if self.use_timestep_embedding:
             timestep_embeddings = self.time_embedder(timestep)
+
+        if self.use_timestep_embedding:
+            hidden_states = self.input_norm(hidden_states, timestep_embeddings)
+        else:
+            hidden_states = self.input_norm(hidden_states)
 
         for decoder_layer in self.layers[: self.num_hidden_layers]:
             if output_hidden_states:
@@ -752,8 +758,13 @@ class LlamaDiTForCausalLM:
 
         # Embedding is always loaded in memory
         embedding_path = f"{self.save_path}/input_embedding.pth"
-        self.input_embedding = nn.Embedding(
-            self.vocab_size, self.hidden_size, self.padding_idx
+        self.input_embedding = nn.Sequential(
+            nn.Embedding(self.vocab_size, self.hidden_size, self.padding_idx),
+            nn.RMSNorm(
+                normalized_shape=self.hidden_size,
+                elementwise_affine=False,
+                eps=config.rms_norm_eps,
+            ),
         )
         if os.path.exists(embedding_path):
             self.input_embedding.load_state_dict(torch.load(embedding_path))
@@ -797,7 +808,6 @@ class LlamaDiTForCausalLM:
         gc.collect()
         torch.cuda.empty_cache
 
-
     def save_checkpoint(self, path: str):
         for i in range(self.num_blocks):
             self.save_block(i)
@@ -818,3 +828,5 @@ class LlamaDiTForCausalLM:
             if current_block is not None:
                 yield from current_block.parameters()
 
+    def noise_boundaries(self, block_idx: int):
+        return self.block_boundaries[block_idx], self.block_boundaries[block_idx + 1]

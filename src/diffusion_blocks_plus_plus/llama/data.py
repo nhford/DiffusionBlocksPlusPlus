@@ -14,7 +14,7 @@ class TextDataModule(L.LightningDataModule):
 
     def __init__(
         self,
-        batch_size: int = 2,  # TODO: This does not reflect the paper, and is a lower value due to hardware limitations
+        batch_size: int = 256,
         eval_batch_size: int | None = None,
         num_workers: int | None = None,
     ):
@@ -93,7 +93,7 @@ def load_data(args):
 
 
 class DiffusionDataGenerator:
-    def __init__(self, p_mean: float, p_std: float, gamma: float):
+    def __init__(self, p_mean=-1.2, p_std=1.2, gamma=0.05):
         self.p_mean = p_mean
         self.p_std = p_std
         self.gamma = gamma
@@ -125,7 +125,7 @@ class DiffusionDataGenerator:
         log_sigma_max += log_sigma_range * self.gamma
 
         z_min = (log_sigma_min - self.p_mean) / self.p_std
-        z_max = (log_sigma_min - self.p_mean) / self.p_std
+        z_max = (log_sigma_max - self.p_mean) / self.p_std
 
         percentile_min = norm.cdf(z_min).item()
         percentile_max = norm.cdf(z_max).item()
@@ -136,7 +136,7 @@ class DiffusionDataGenerator:
             + percentile_min
         )
 
-        z = torch.erfinv(percentile)
+        z = math.sqrt(2) * torch.erfinv(percentile * 2 - 1)
         log_sigma = self.p_mean + self.p_std * z
         sigma = log_sigma.exp()
         return sigma
@@ -185,9 +185,16 @@ class DiffusionDataGenerator:
         if len(token_mask.shape) != 2:
             raise ValueError(f"Invalid token mask shape: {token_mask.shape=}")
 
-        num_batches, seq_len = token_mask.shape
+        seq_len = token_mask.shape[1]
         device = token_mask.device
         token_mask = token_mask.bool()
+        token_mask = torch.cat(
+            [
+                token_mask[:, :-1],
+                token_mask[:, 1:],
+            ],
+            dim=1,
+        )
 
         position_ids = torch.cat(
             [
@@ -222,7 +229,7 @@ class DiffusionDataGenerator:
     def prepare_training_batch(
         self,
         input_ids: torch.Tensor,
-        features: torch.Tensor,
+        input_embeddings: torch.Tensor,
         token_mask: torch.Tensor,
         min_stdev: float,
         max_stdev: float,
@@ -264,20 +271,22 @@ class DiffusionDataGenerator:
             - `labels_mask` is a shape `(B, (S * 2 - 2))` tensor containing 1
                 iff the token at that position is a non-padding token.
         """
-        if not (input_ids.device == features.device == token_mask.device):
+        if not (input_ids.device == input_embeddings.device == token_mask.device):
             raise ValueError(
-                f"Expected all tensors to be on the same device. Recieved {input_ids.device=}, {features.device=}, {token_mask.device=}."
+                f"Expected all tensors to be on the same device. Recieved {input_ids.device=}, {input_embeddings.device=}, {token_mask.device=}."
             )
 
         num_batches = input_ids.shape[0]
         sequence_length = input_ids.shape[1]
-        device = features.device
+        device = input_embeddings.device
 
-        clean_embeddings: torch.Tensor = features[:, :-1, :]
-        noisy_embeddings: torch.Tensor = features[:, 1:, :]
+        clean_embeddings: torch.Tensor = input_embeddings[:, :-1, :].clone()
+        noisy_embeddings: torch.Tensor = input_embeddings[:, 1:, :].clone()
 
         # Add noise to noisy embeddings
-        sigmas = self.get_sigmas(num_batches, min_stdev, max_stdev, features.device)
+        sigmas = self.get_sigmas(
+            num_batches, min_stdev, max_stdev, input_embeddings.device
+        )
         noise = torch.randn_like(noisy_embeddings)
         noisy_embeddings += sigmas[:, None, None] * noise
 
@@ -303,7 +312,7 @@ class DiffusionDataGenerator:
 
         labels_mask = torch.cat(
             [
-                token_mask[:, :-1],
+                torch.zeros_like(token_mask[:, :-1]),
                 token_mask[:, 1:],
             ],
             dim=1,
