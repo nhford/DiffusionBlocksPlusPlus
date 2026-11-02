@@ -218,3 +218,6 @@ test.ipynb
 
 # Model checkpoints
 *.ckpt
+data
+figures
+checkpoints
