@@ -298,7 +298,7 @@ class DiffusionDataGenerator:
                 input_ids[:, :-1],
                 input_ids[:, 1:],
             ],
-            dim=1
+            dim=1,
         )
 
         labels_mask = torch.cat(
@@ -306,7 +306,7 @@ class DiffusionDataGenerator:
                 token_mask[:, :-1],
                 token_mask[:, 1:],
             ],
-            dim=1
+            dim=1,
         )
 
         return features, position_ids, sigmas, attention, labels, labels_mask
