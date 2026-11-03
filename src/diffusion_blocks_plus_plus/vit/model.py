@@ -103,7 +103,8 @@ class ViTModel(L.LightningModule):
     def test_step(self, batch, batch_idx):
         batch_size = batch["pixel_values"].shape[0]
         model_kwargs = self.get_model_kwargs(batch)
-        res = self.shared_step(batch, step="test", return_metrics=True, **model_kwargs)
+        combined_kwargs = {**model_kwargs, **self.test_kwargs}
+        res = self.shared_step(batch, step="test", return_metrics=True, **combined_kwargs)
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
 
 
@@ -116,7 +117,13 @@ class ViTDBlockModel(ViTModel):
         self.class_dropout_prob = (
             args.class_dropout_prob if self.cfg_scale > 0.0 else 0.0
         )
-        self.num_inference_steps = self.args.num_inference_steps or self.args.num_blocks
+        self.num_inference_steps = (
+            self.args.num_blocks
+            if self.args.num_inference_steps is None
+            else self.args.num_inference_steps
+        )
+        if self.num_inference_steps < 1:
+            raise ValueError("num_inference_steps must be positive")
         self.block_sigmas = get_block_sigmas(num_layers=self.args.num_blocks)
         self.layer_assignment = None
         self.register_buffer(
@@ -124,6 +131,7 @@ class ViTDBlockModel(ViTModel):
             get_discrete_sigmas(num_steps=self.num_inference_steps, dblock=True).to(
                 self.device
             ),
+            persistent=False,
         )
         self.save_hyperparameters(
             {
@@ -132,6 +140,21 @@ class ViTDBlockModel(ViTModel):
                 "cfg_scale": self.cfg_scale,
                 "class_dropout_prob": self.class_dropout_prob,
             },
+        )
+
+        # add diffusion step method
+        self.test_kwargs = {}
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict,
+        missing_keys, unexpected_keys, error_msgs,
+    ):
+        # Older checkpoints saved this derived schedule. Keep the schedule built
+        # from the current inference settings, regardless of its saved length.
+        state_dict.pop(prefix + "sigmas", None)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
         )
 
     def configure_model(self):
@@ -244,9 +267,10 @@ class ViTDBlockModel(ViTModel):
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
         pixel_values = batch["pixel_values"]
         labels = batch["labels"]
+        ode = kwargs.get("ode", "euler")
 
         if return_metrics:
-            logits = self.diffusion_step(pixel_values)
+            logits = self.diffusion_step(pixel_values,ode=ode)
             if step == "val":
                 return self.valid_metrics(
                     logits.view(-1, self.num_labels), labels.view(-1)
@@ -279,26 +303,42 @@ class ViTDBlockModel(ViTModel):
         }
         return loss, loss_dict
 
-    def diffusion_step(self, x):
+    def diffusion_step(self, x, ode='euler'):
         bsz = x.shape[0]
         hidden_size = self.model.config.hidden_size
         z = torch.randn(bsz, hidden_size, device=self.device)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([x.shape[0]])
+
+        def get_slope(state, sigma):
+            logits = self.denoise(x, state, sigma)
+            probs = F.softmax(logits, dim=1)
+            denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
+            return (state - denoised) / sigma[:, None]
+
         for i in range(self.sigmas.shape[0] - 1):
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
-            # denoise
-            # This is the indirect denoising expectation trick from the CDCD paper
-            logits = self.denoise(x, z, sigma)
-            probs = F.softmax(logits, dim=1)
-            denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
-            # to d
-            d = (z - denoised) / sigma[:, None]
-            dt = next_sigma - sigma
-            # euler step
-            euler_step = z + dt[:, None] * d
-            z = euler_step
+            d_euler = get_slope(z, sigma)
+            dt_euler = next_sigma - sigma
+            euler_step = z + dt_euler[:, None] * d_euler
+
+            if ode == 'euler':
+                z = euler_step
+            elif ode == 'heun':
+                # Explicit trapezoidal (Heun) method: evaluate the second slope
+                # at the full Euler predictor and the end of the interval.
+                d_heun = get_slope(euler_step, next_sigma)
+                z = z + dt_euler[:, None] * (d_euler + d_heun) / 2
+
+            elif ode == 'midpoint':
+                # Explicit midpoint method: evaluate the slope at the Euler
+                # prediction halfway through both the state and sigma interval.
+                average_sigma = (next_sigma + sigma) / 2
+                midpoint = z + (dt_euler[:, None] / 2) * d_euler
+                d_midpoint = get_slope(midpoint, average_sigma)
+                z = z + dt_euler[:, None] * d_midpoint
+
         min_sigma = self.sigmas[-1].item()
         sigmas = torch.full((x.shape[0],), min_sigma, device=self.device)
         logits = self.denoise(x, z, sigmas)

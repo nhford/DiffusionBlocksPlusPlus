@@ -21,6 +21,11 @@ uv run huggingface-cli login
 uv run wandb login
 ```
 
+On macOS, `uv sync` skips `flash-attn`, which requires a supported GPU build
+environment. The project does not directly import it, so it is not needed for
+installation on a Mac. On Linux, it remains installed by default and requires
+a compatible CUDA toolkit (including `nvcc`).
+
 We conducted our experiments in the following environment: Python Version 3.12 and CUDA Version 12.2 H100.
 
 ## Training
@@ -93,6 +98,15 @@ uv run python -m src.diffusion_blocks_plus_plus.deploy_vit test cifar100 --model
 ```bash
 CKPT_PATH="logs/path-to-last.ckpt"
 uv run python -m src.diffusion_blocks_plus_plus.deploy_vit test cifar100 --model_type dblock --ckpt_path $CKPT
+```
+
+Set `--num_inference_steps` to use more inference steps with an existing
+checkpoint. Keep `--num_blocks` equal to the block count used during training;
+the inference step count is independent and defaults to that block count.
+
+```bash
+uv run main.py test cifar100 --model_type dblock \
+    --ckpt_path "$CKPT_PATH" --num_blocks 3 --num_inference_steps 12
 ```
 
 ## Acknowledgement
