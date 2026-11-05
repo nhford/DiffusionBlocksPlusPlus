@@ -221,3 +221,6 @@ test.ipynb
 data
 figures
 checkpoints
+
+# Local lab notebook artifacts
+/lab_outputs/

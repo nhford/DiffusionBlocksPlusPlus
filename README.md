@@ -28,6 +28,16 @@ a compatible CUDA toolkit (including `nvcc`).
 
 We conducted our experiments in the following environment: Python Version 3.12 and CUDA Version 12.2 H100.
 
+## GPU notebooks
+
+Use [colab_dblock_wandb.ipynb](colab_dblock_wandb.ipynb) for Google Colab, or
+[lab_dblock_wandb.ipynb](lab_dblock_wandb.ipynb) for JupyterLab on a lab GPU computer.
+The lab notebook needs no Google Drive sign-in: it saves checkpoints and solver
+comparison results to a configurable local `lab_outputs/` directory. Select a
+Python 3.12+ kernel with CUDA-enabled PyTorch and torchvision, then run its setup
+cells. W&B logging supports online authentication or offline mode. Both notebooks
+train one model and compare Euler and midpoint using the same checkpoint.
+
 ## Training
 
 The model checkpoints are saved in `logs` folder.
