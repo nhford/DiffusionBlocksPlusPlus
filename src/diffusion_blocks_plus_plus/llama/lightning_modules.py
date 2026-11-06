@@ -5,6 +5,7 @@ import torchmetrics
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
 from transformers.optimization import get_scheduler
 
+
 class LlamaLightningModule(L.LightningModule):
     max_seq_length = 256
     # See Appendix E.4 in the Sakana.ai paper
@@ -13,9 +14,8 @@ class LlamaLightningModule(L.LightningModule):
         num_hidden_layers=12,
         hidden_size=768,
         num_attention_heads=12,
-        intermediate_size=3072, # TODO: Experiment to find the correct value here, since it is not stated in the paper
+        intermediate_size=3072,  # TODO: Experiment to find the correct value here, since it is not stated in the paper
     )
-
 
     def __init__(self, args):
         super().__init__()
@@ -119,9 +119,8 @@ class LlamaDBlockLightningModule(LlamaLightningModule):
         num_hidden_layers=12,
         hidden_size=768,
         num_attention_heads=12,
-        intermediate_size=3072, # TODO: Experiment to find the correct value here, since it is not stated in the paper
+        intermediate_size=3072,  # TODO: Experiment to find the correct value here, since it is not stated in the paper
     )
-
 
     def build_attention_mask(self, token_mask: torch.Tensor):
         """
@@ -172,7 +171,6 @@ class LlamaDBlockLightningModule(LlamaLightningModule):
         """
         # TODO Implement correctly
         return torch.full((batch_size,), 0.1)
-
 
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
         batch_size = len(batch)
@@ -244,4 +242,3 @@ def load_model(args):
         return LlamaLightningModule(args)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")
-

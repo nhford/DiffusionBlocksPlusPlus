@@ -36,39 +36,43 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (BaseModelOutputWithPast,
-                                           CausalLMOutputWithPast)
-from transformers.models.llama.modeling_llama import (KwargsForCausalLM,
-                                                      LlamaAttention, LlamaMLP,
-                                                      LlamaRMSNorm,
-                                                      LlamaRotaryEmbedding)
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
+from transformers.models.llama.modeling_llama import (
+    KwargsForCausalLM,
+    LlamaAttention,
+    LlamaMLP,
+    LlamaRMSNorm,
+    LlamaRotaryEmbedding,
+)
 
 
 class AdaRMS(nn.Module):
-    """
-    RMSNorm equivalent to the AdaLN normalization from Peebles and Xie
+    """RMSNorm equivalent to the AdaLN normalization from Peebles and Xie
     (https://arxiv.org/abs/2212.09748).
 
-    In detail, this layer takes an embedding and a conditioning tensor, whose
-    dimensions must be breadcastable except for the last dimension, computes a
-    bias and scale for each channel, and then applies RMSNorm on the embeddings
-    using the computed bias and scale.
+    This layer takes an embedding and a conditioning tensor, whose dimensions
+    must be breadcastable except for the last dimension, computes a bias and
+    scale for each channel, and then applies RMSNorm on the embeddings using the
+    computed bias and scale.
+
+    Args:
+        cond_size: The size of the conditioning vector
+        features: The size of the embeddings being normalized by this layer.
+        bias: Whether this layer applies embeddings to the normalized
+        embeddings.
+
+    Shape:
+        - Input (embeddings): (batch_size, sequence, features)
+        - Input (conditioning): (batch_size, cond_size)
+        - Output: (batch_size, sequence, features)
     """
 
     def __init__(
         self, cond_size: int, features: int, eps: float, bias=True, hidden_bias=True
     ):
-        """Initializes an AdaRMS Module.
-
-        Args:
-            cond_size: The size of the conditioning vector
-            features: The size of the embeddings being normalized by this layer.
-            bias: Whether this layer applies embeddings to the normalized
-            embeddings.
-
-        This module takes a conditioning tensor (batch_size, cond_size) and an
-        embeddings tensor (batch_size, sequence, features)
-        """
         super().__init__()
         self.silu = nn.SiLU()
         self.bias = bias
@@ -135,9 +139,6 @@ class TimestepEmbedder(nn.Module):
         )
         t_emb = self.mlp(t_freq)
         return t_emb
-
-
-# TODO: Rewrite LlamaForCausalLM to include AdaLN Noise Embeddings
 
 
 class LlamaDiTConfig(LlamaConfig):
