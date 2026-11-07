@@ -199,7 +199,7 @@ class DiffusionDataGenerator:
         position_ids = torch.cat(
             [
                 torch.arange(0, seq_len - 1, device=device),
-                torch.arange(0, seq_len - 1, device=device),
+                torch.arange(1, seq_len, device=device),
             ]
         )
 
