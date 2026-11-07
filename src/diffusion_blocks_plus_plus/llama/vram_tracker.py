@@ -22,6 +22,17 @@ def format_mem(bytes: int):
 
 
 class MemoryTracker:
+    """Tracker for the major components of memory usage during training.
+
+    This class is specifically designed for LlamaDitForCausalLM.
+    To use this class, call the measure_mem_* methods at the appropriate locations.
+
+    Args:
+        model: The model to track memory usage for.
+        optimizer: The optimizer to track memory usage for.
+        device: The device where the memory is stored.
+    """
+
     def __init__(
         self, model: LlamaDiTForCausalLM, optimizer: Optimizer, device: torch.device
     ):
@@ -70,6 +81,10 @@ class MemoryTracker:
         )
 
     def begin_forward(self):
+        """Begin tracking the forward pass.
+
+        Call this function before loading the batch into the device."""
+
         self._assert_unused(self.forward_initial_mem)
         self.forward_initial_mem = self._current_memory_used()
 
