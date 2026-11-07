@@ -8,10 +8,7 @@ from datasets import dataset_dict, load_dataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import (
-    AutoTokenizer,
-    LlamaTokenizerFast,
-)
+from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from diffusion_blocks_plus_plus.llama.data import DiffusionDataGenerator
@@ -59,7 +56,7 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
     progress = tqdm(dataloader)
     for batch_idx, batch in enumerate(progress):
         memory_tracker.reset()
-        memory_tracker.measure_vram_model()
+        memory_tracker.measure_mem_weights()
         memory_tracker.begin_forward()
 
         batch_size = len(batch["input_ids"])
@@ -95,7 +92,7 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
             **(dict(timestep=sigmas.log()) if EMBED_TIMESTEPS else {}),
         )
 
-        memory_tracker.measure_vram_act()
+        memory_tracker.measure_mem_act()
 
         logits = outputs.logits
         assert isinstance(logits, torch.Tensor)
@@ -105,11 +102,11 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
         loss = (loss * labels_mask).sum() / labels_mask.sum()
         loss.backward()
 
-        memory_tracker.measure_vram_grad()
+        memory_tracker.measure_mem_grad()
 
         optimizer.step()
 
-        memory_tracker.measure_vram_optim()
+        memory_tracker.measure_mem_optim()
 
         optimizer.zero_grad()
 
