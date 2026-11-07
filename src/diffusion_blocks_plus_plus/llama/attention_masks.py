@@ -123,7 +123,6 @@ def build_diffusion_attention_mask(
     return attention_mask
 
 
-@staticmethod
 def build_train_attention_mask(token_mask: torch.Tensor):
     """Build the attention mask for auto-regressive DiffusionBlocks
     training.
