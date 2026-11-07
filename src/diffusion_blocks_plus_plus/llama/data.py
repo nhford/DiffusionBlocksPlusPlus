@@ -7,6 +7,9 @@ from datasets import load_dataset
 from scipy.stats import norm
 from torch.utils.data import DataLoader
 
+from diffusion_blocks_plus_plus.llama.attention_masks import \
+    build_train_attention_mask
+
 
 class TextDataModule(L.LightningDataModule):
     data_name = None
@@ -141,91 +144,6 @@ class DiffusionDataGenerator:
         sigma = log_sigma.exp()
         return sigma
 
-    @staticmethod
-    def build_train_attention_mask(token_mask: torch.Tensor):
-        """Build the attention mask for auto-regressive DiffusionBlocks
-        training.
-
-        Throughout the rest of this documentation, let
-        `B` be the number of sequences in the current batch, and
-        `S` be the length of the token sequence being processed.
-
-        This function builds a rank-4 attention mask that allows tokens to
-        attend to themselves and unmasked tokens with lower indices, where 0
-        represents attention values that should be allowed, and negative
-        infinity represents attention values that are masked out.
-
-        For more information on rank-4 attention masks, see
-        https://github.com/huggingface/transformers/pull/27539
-
-        Args:
-            token_mask: A shape `(B, S)` tensor containing 1 at locations
-                with non-padding tokens, and 0 at locations with padding tokens.
-
-
-        Returns:
-            A tensor of shape `(B, 1, (S * 2 - 2), (S * 2 - 2))` with the
-            attention mask.
-
-        Example:
-            Let `i` represent negative infinity, if our token_mask is
-            `[1,1,1,1,1]`, then this matrix will be returned:
-
-            ```
-            0iiiiiii
-            00iiiiii
-            000iiiii
-            0000iiii
-            0iii0iii
-            00iii0ii
-            000iii0i
-            0000iii0
-            ```
-        """
-        if len(token_mask.shape) != 2:
-            raise ValueError(f"Invalid token mask shape: {token_mask.shape=}")
-
-        seq_len = token_mask.shape[1]
-        device = token_mask.device
-        token_mask = token_mask.bool()
-        token_mask = torch.cat(
-            [
-                token_mask[:, :-1],
-                token_mask[:, 1:],
-            ],
-            dim=1,
-        )
-
-        position_ids = torch.cat(
-            [
-                torch.arange(0, seq_len - 1, device=device),
-                torch.arange(1, seq_len, device=device),
-            ]
-        )
-
-        is_clean = torch.cat(
-            [
-                torch.ones(seq_len - 1, dtype=torch.bool, device=device),
-                torch.zeros(seq_len - 1, dtype=torch.bool, device=device),
-            ]
-        )
-
-        query_idx = position_ids[None, None, :, None]
-        key_idx = position_ids[None, None, None, :]
-
-        # Attention to previous clean tokens is legal.
-        attention_to_clean = (key_idx < query_idx) & is_clean[None, None, None, :]
-
-        # We only want to attend when both the query and key are non-padding tokens.
-        is_unmasked = token_mask[:, None, :, None] & token_mask[:, None, None, :]
-
-        # We can always attend to ourselves.
-        own_attention = torch.eye(seq_len * 2 - 2, dtype=torch.bool, device=device)
-
-        allowed_attentions = attention_to_clean & is_unmasked | own_attention
-
-        return torch.where(allowed_attentions, 0, float("-inf"))
-
     def prepare_training_batch(
         self,
         input_ids: torch.Tensor,
@@ -292,7 +210,7 @@ class DiffusionDataGenerator:
 
         features = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
-        attention = self.build_train_attention_mask(token_mask)
+        attention = build_train_attention_mask(token_mask)
 
         position_ids = torch.cat(
             [

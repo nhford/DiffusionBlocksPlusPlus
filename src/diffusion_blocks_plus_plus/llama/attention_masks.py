@@ -75,7 +75,7 @@ def build_diffusion_attention_mask(
             f"{noisy_mask.device=}\n"
             f"{noisy_positions.device=}"
         )
-    
+
     clean_mask = clean_mask.bool()
     noisy_mask = noisy_mask.bool()
 
@@ -111,10 +111,55 @@ def build_diffusion_attention_mask(
     clean_to_noisy = torch.zeros((B, 1, S_c, S_n), dtype=torch.bool, device=device)
 
     # Convert the quadrants into an attention matrix.
-    attention_mask = torch.cat([
-        torch.cat([clean_to_clean, clean_to_noisy], dim=3),
-        torch.cat([noisy_to_clean, noisy_to_noisy], dim=3)
-    ], dim=2)
+    attention_mask = torch.cat(
+        [
+            torch.cat([clean_to_clean, clean_to_noisy], dim=3),
+            torch.cat([noisy_to_clean, noisy_to_noisy], dim=3),
+        ],
+        dim=2,
+    )
     attention_mask = torch.where(attention_mask, 0, float("-inf")).to(dtype)
 
     return attention_mask
+
+
+@staticmethod
+def build_train_attention_mask(token_mask: torch.Tensor):
+    """Build the attention mask for auto-regressive DiffusionBlocks
+    training.
+
+    Throughout the rest of this documentation, let
+    `B` be the number of sequences in the current batch, and
+    `S` be the length of the token sequence being processed.
+
+    See `build_diffusion_attention_mask` for nore information.
+
+    Args:
+        token_mask: A shape `(B, S)` tensor containing 1 at locations
+            with non-padding tokens, and 0 at locations with padding tokens.
+
+    Returns:
+        A tensor of shape `(B, 1, (S * 2 - 2), (S * 2 - 2))` with the
+        attention mask.
+    """
+    if len(token_mask.shape) != 2:
+        raise ValueError(f"Invalid token mask shape: {token_mask.shape=}")
+
+    device = token_mask.device
+    num_batches, seq_len = token_mask.shape
+
+    clean_mask = token_mask[:, :-1]
+    noisy_mask = token_mask[:, 1:]
+    clean_positions = torch.arange(0, seq_len - 1, device=device).broadcast_to(
+        num_batches, seq_len - 1
+    )
+    noisy_positions = torch.arange(1, seq_len, device=device).broadcast_to(
+        num_batches, seq_len - 1
+    )
+
+    return build_diffusion_attention_mask(
+        clean_mask=clean_mask,
+        clean_positions=clean_positions,
+        noisy_mask=noisy_mask,
+        noisy_positions=noisy_positions,
+    )
