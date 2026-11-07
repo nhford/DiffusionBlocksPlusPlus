@@ -15,6 +15,7 @@ from transformers import (
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from diffusion_blocks_plus_plus.llama.data import DiffusionDataGenerator
+from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
 
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .plot_data import generate_plot
@@ -30,10 +31,6 @@ DEBUG_NOISE_MAX = 1
 DEBUG_SMALL_DATASET = True
 DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
-
-
-def get_vram_usage():
-    return torch.cuda.memory_allocated()
 
 
 def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoader):
@@ -55,33 +52,26 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
 
     optimizer = AdamW(model.loaded_parameters(), lr=LEARNING_RATE)
 
+    memory_tracker = MemoryTracker(model, optimizer, device)
+
     results = []
+
     progress = tqdm(dataloader)
     for batch_idx, batch in enumerate(progress):
-        vram_usage_dict = {"model": 0, "activations": 0, "gradients": 0, "optimizer": 0}
-        if DEBUG_LOG_VRAM:
-            for param in model.loaded_parameters():
-                vram_usage_dict["model"] += param.numel() * param.element_size()
+        memory_tracker.reset()
+        memory_tracker.measure_vram_model()
+        memory_tracker.begin_forward()
 
         batch_size = len(batch["input_ids"])
-
-        if DEBUG_LOG_VRAM:
-            vram_usage_dict["activations"] -= get_vram_usage()
         token_ids: torch.Tensor = batch["input_ids"].to(device)
-        assert isinstance(token_ids, torch.Tensor) and token_ids.shape == (
-            batch_size,
-            SEQUENCE_LENGTH + 1,
-        )
+        assert isinstance(token_ids, torch.Tensor)
+        assert token_ids.shape == (batch_size, SEQUENCE_LENGTH + 1)
         if DEBUG_LEARN_NOISE:
             token_ids = torch.randint_like(token_ids, 2)
 
         masked_positions: torch.Tensor = batch["attention_mask"].to(device)
-        assert isinstance(
-            masked_positions, torch.Tensor
-        ) and masked_positions.shape == (
-            batch_size,
-            SEQUENCE_LENGTH + 1,
-        )
+        assert isinstance(masked_positions, torch.Tensor)
+        assert masked_positions.shape == (batch_size, SEQUENCE_LENGTH + 1)
         if DEBUG_LEARN_NOISE:
             masked_positions = torch.ones_like(masked_positions)
 
@@ -97,6 +87,7 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
 
         current_block = model.blocks_loaded[block_idx]
         assert current_block is not None
+
         outputs: CausalLMOutputWithPast = current_block(
             inputs_embeds=features,
             attention_mask=attention,
@@ -104,45 +95,28 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
             **(dict(timestep=sigmas.log()) if EMBED_TIMESTEPS else {}),
         )
 
-        if DEBUG_LOG_VRAM:
-            vram_usage_dict["activations"] += get_vram_usage()
+        memory_tracker.measure_vram_act()
 
         logits = outputs.logits
-        assert logits is not None and logits.shape == (
-            batch_size,
-            SEQUENCE_LENGTH * 2,
-            config.vocab_size,
-        )
+        assert isinstance(logits, torch.Tensor)
+        assert logits.shape == (batch_size, SEQUENCE_LENGTH * 2, config.vocab_size)
+
         loss = F.cross_entropy(logits.permute(0, 2, 1), labels, reduction="none")
         loss = (loss * labels_mask).sum() / labels_mask.sum()
         loss.backward()
 
-        if DEBUG_LOG_VRAM:
-            for param in model.loaded_parameters():
-                grad = param.grad
-                if grad is not None:
-                    vram_usage_dict["gradients"] += grad.numel() * grad.element_size()
+        memory_tracker.measure_vram_grad()
 
         optimizer.step()
 
-        if DEBUG_LOG_VRAM:
-            for optimizer_params in optimizer.state.values():
-                if not isinstance(optimizer_params, dict):
-                    continue
-                for state_entry in optimizer_params.values():
-                    vram_usage_dict["optimizer"] += (
-                        state_entry.numel() * state_entry.element_size()
-                    )
+        memory_tracker.measure_vram_optim()
 
         optimizer.zero_grad()
 
-        vram_usage_dict = {
-            **vram_usage_dict,
-            "total": sum(vram_usage_dict.values()),
-        }
-        vram_usage_dict = {"vram_" + k: v / 1e9 for k, v in vram_usage_dict.items()}
-        results.append({"batch_idx": batch_idx, "loss": loss.item(), **vram_usage_dict})
-        progress.set_postfix({"loss": loss.item(), **vram_usage_dict})
+        results.append(
+            {"batch_idx": batch_idx, "loss": loss.item(), **memory_tracker.as_dict()}
+        )
+        progress.set_postfix({"loss": loss.item(), **memory_tracker.tqdm_dict()})
     return results
 
 
