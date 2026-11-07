@@ -35,3 +35,8 @@ torchvision = [
 
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
