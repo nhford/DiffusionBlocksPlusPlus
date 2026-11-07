@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 
+import datasets
 import pandas
 import torch
 import torch.nn.functional as F
@@ -11,7 +12,10 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from diffusion_blocks_plus_plus.llama.data import DiffusionDataGenerator
+from diffusion_blocks_plus_plus.llama.data import (
+    DiffusionDataGenerator,
+    trivial_random_dataset,
+)
 from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
 
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
@@ -25,7 +29,7 @@ EMBED_TIMESTEPS = False
 DEBUG_LEARN_NOISE = True
 DEBUG_NOISE_MIN = 0.5
 DEBUG_NOISE_MAX = 1
-DEBUG_SMALL_DATASET = True
+DEBUG_DATASET_CAP = 1000
 DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
 
@@ -59,18 +63,16 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
         memory_tracker.measure_mem_weights()
         memory_tracker.begin_forward()
 
-        batch_size = len(batch["input_ids"])
-        token_ids: torch.Tensor = batch["input_ids"].to(device)
+        token_ids = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor)
-        assert token_ids.shape == (batch_size, SEQUENCE_LENGTH + 1)
-        if DEBUG_LEARN_NOISE:
-            token_ids = torch.randint_like(token_ids, 2)
+        assert token_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
 
-        masked_positions: torch.Tensor = batch["attention_mask"].to(device)
+        masked_positions = batch["attention_mask"].to(device)
         assert isinstance(masked_positions, torch.Tensor)
-        assert masked_positions.shape == (batch_size, SEQUENCE_LENGTH + 1)
-        if DEBUG_LEARN_NOISE:
-            masked_positions = torch.ones_like(masked_positions)
+        assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+
+        current_block = model.blocks_loaded[block_idx]
+        assert current_block is not None
 
         features, position_ids, sigmas, attention, labels, labels_mask = (
             data_preprocessor.prepare_training_batch(
@@ -81,9 +83,6 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
                 max_stdev=max_stdev,
             )
         )
-
-        current_block = model.blocks_loaded[block_idx]
-        assert current_block is not None
 
         outputs: CausalLMOutputWithPast = current_block(
             inputs_embeds=features,
@@ -96,7 +95,7 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
 
         logits = outputs.logits
         assert isinstance(logits, torch.Tensor)
-        assert logits.shape == (batch_size, SEQUENCE_LENGTH * 2, config.vocab_size)
+        assert logits.shape == (BATCH_SIZE, SEQUENCE_LENGTH * 2, config.vocab_size)
 
         loss = F.cross_entropy(logits.permute(0, 2, 1), labels, reduction="none")
         loss = (loss * labels_mask).sum() / labels_mask.sum()
@@ -133,16 +132,19 @@ if __name__ == "__main__":
         )
         return result
 
-    if DEBUG_SMALL_DATASET:
-        train_dataset = load_dataset("roneneldan/TinyStories", split="train[:1000]")
+    if DEBUG_LEARN_NOISE:
+        train_dataset = trivial_random_dataset(DEBUG_DATASET_CAP, SEQUENCE_LENGTH + 1)
     else:
-        train_dataset = load_dataset("roneneldan/TinyStories", split="train")
+        train_split = (
+            "train" if DEBUG_DATASET_CAP is None else f"train[:{DEBUG_DATASET_CAP}]"
+        )
+        train_dataset = load_dataset("roneneldan/TinyStories", split=train_split)
+        train_dataset = train_dataset.map(
+            tokenize_function, batched=True, remove_columns=["text"]
+        )
+    train_dataset = train_dataset.with_format("torch")
     assert isinstance(train_dataset, dataset_dict.Dataset)
 
-    train_dataset = train_dataset.map(
-        tokenize_function, batched=True, remove_columns=["text"]
-    )
-    train_dataset = train_dataset.with_format("torch")
     dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
     # See Appendix E.4 in the Sakana.ai paper

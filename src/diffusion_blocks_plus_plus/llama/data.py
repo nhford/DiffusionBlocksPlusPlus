@@ -1,6 +1,7 @@
 import math
 import os
 
+import datasets
 import lightning as L
 import torch
 from datasets import load_dataset
@@ -9,6 +10,15 @@ from torch.utils.data import DataLoader
 
 from diffusion_blocks_plus_plus.llama.attention_masks import \
     build_train_attention_mask
+
+
+def trivial_random_dataset(num_samples, sequence_len):
+    return datasets.Dataset.from_dict(
+        {
+            "input_ids": torch.randint(0, 2, (num_samples, sequence_len)),
+            "attention_mask": torch.ones(num_samples, sequence_len),
+        }
+    )
 
 
 class TextDataModule(L.LightningDataModule):
