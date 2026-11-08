@@ -30,6 +30,7 @@ from typing import Optional, Tuple, Union, Unpack
 from venv import logger
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from transformers import LlamaConfig, LlamaPreTrainedModel
 from transformers.cache_utils import Cache, DynamicCache
@@ -751,6 +752,7 @@ class LlamaDiTForCausalLM:
         self.hidden_size = config.hidden_size
         self.padding_idx = config.pad_token_id
         self.num_blocks = config.num_blocks
+        self.rms_norm_eps = config.rms_norm_eps
         if save_path is None:
             self.save_path = tempfile.mkdtemp(prefix="llama_dit_for_causal_lm")
         else:
@@ -759,13 +761,8 @@ class LlamaDiTForCausalLM:
 
         # Embedding is always loaded in memory
         embedding_path = f"{self.save_path}/input_embedding.pth"
-        self.input_embedding = nn.Sequential(
-            nn.Embedding(self.vocab_size, self.hidden_size, self.padding_idx),
-            nn.RMSNorm(
-                normalized_shape=self.hidden_size,
-                elementwise_affine=False,
-                eps=config.rms_norm_eps,
-            ),
+        self.input_embedding = nn.Embedding(
+            self.vocab_size, self.hidden_size, self.padding_idx
         )
         if os.path.exists(embedding_path):
             self.input_embedding.load_state_dict(torch.load(embedding_path))
@@ -828,6 +825,34 @@ class LlamaDiTForCausalLM:
             current_block = self.blocks_loaded[i]
             if current_block is not None:
                 yield from current_block.parameters()
+
+    def embed_input_ids(self, input_ids: torch.Tensor):
+        return F.rms_norm(
+            self.input_embedding(input_ids),
+            normalized_shape=(self.hidden_size,),
+            eps=self.rms_norm_eps,
+        )
+
+    def embed_output_logits(self, logits: torch.Tensor):
+        assert logits.shape[-1] == self.vocab_size
+        likelihoods = F.softmax(logits, dim=-1)
+        embeddings = self.input_embedding.weight
+        embeddings = F.rms_norm(
+            embeddings,
+            normalized_shape=(self.hidden_size,),
+            eps=self.rms_norm_eps,
+        )
+        return likelihoods @ embeddings
+
+    def get_block_from_timestep(self, timestep: float) -> int:
+        matching_blocks = [
+            block_idx - 1
+            for block_idx, upper_bound in enumerate(self.block_boundaries)
+            if timestep <= math.log(upper_bound)
+        ]
+        if len(matching_blocks) == 0:
+            return self.num_blocks - 1
+        return max(0, matching_blocks[0])
 
     def noise_boundaries(self, block_idx: int):
         return self.block_boundaries[block_idx], self.block_boundaries[block_idx + 1]

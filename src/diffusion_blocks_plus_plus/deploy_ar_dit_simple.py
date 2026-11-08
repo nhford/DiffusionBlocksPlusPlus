@@ -1,7 +1,7 @@
+import math
 import os
 from datetime import datetime
 
-import datasets
 import pandas
 import torch
 import torch.nn.functional as F
@@ -12,6 +12,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+from diffusion_blocks_plus_plus.llama.attention_masks import build_train_attention_mask
 from diffusion_blocks_plus_plus.llama.data import (
     DiffusionDataGenerator,
     trivial_random_dataset,
@@ -30,6 +31,20 @@ DEBUG_LEARN_NOISE = True
 DEBUG_DATASET_CAP = 100
 DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
+
+
+def mask_to_pos(mask: torch.Tensor) -> torch.Tensor:
+    """Converts a 0-1 token mask into a corresponding position id tensor.
+
+    Args:
+        mask: A token mask with the shape `(B, S)` where `mask[i, j]` is `0` iff
+            the `j`th token is padding and `1` otherwise.
+
+    Returns:
+        A position id tensor of shape `(B, S)` based on index 0, with padding
+        tokens having position `-1`.
+    """
+    return (mask.cumsum(dim=1) * mask - 1).long()
 
 
 def train_block(
@@ -79,7 +94,7 @@ def train_block(
         features, position_ids, sigmas, attention, labels, labels_mask = (
             data_preprocessor.prepare_training_batch(
                 input_ids=token_ids,
-                input_embeddings=model.input_embedding(token_ids),
+                input_embeddings=model.embed_input_ids(token_ids),
                 token_mask=masked_positions,
                 min_stdev=min_stdev,
                 max_stdev=max_stdev,
@@ -140,9 +155,88 @@ def evaluate_model(
         assert isinstance(masked_positions, torch.Tensor)
         assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
 
-        # TODO: Implement evaluation procedure
+        # Add 1 to the per-channel variance due to the embedding variance.
+        initial_variance = model.block_boundaries[-1] ** 2 + 1
+        initial_stdev = math.sqrt(initial_variance)
 
-        # Subtract batch size because <BOS> is not predicted.
+        clean_embeddings = model.embed_input_ids(token_ids[:, :-1])
+        assert clean_embeddings.shape == (
+            BATCH_SIZE,
+            SEQUENCE_LENGTH,
+            clean_embeddings.shape[2],
+        )
+
+        attention_mask = build_train_attention_mask(masked_positions)
+        assert attention_mask.shape == (
+            BATCH_SIZE,
+            1,
+            SEQUENCE_LENGTH * 2,
+            SEQUENCE_LENGTH * 2,
+        )
+
+        position_ids = mask_to_pos(masked_positions)
+        position_ids = torch.cat([position_ids[:, :-1], position_ids[:, 1:]], dim=1)
+        assert position_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH * 2)
+
+        def get_logits(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
+            """Get the logit predictions for an embedding's denoised embedding."""
+            current_block_idx = model.get_block_from_timestep(timestep)
+
+            for block_idx in range(model.num_blocks):
+                if block_idx != current_block_idx:
+                    model.unload_block(block_idx)
+            model.load_block(current_block_idx)
+            current_block = model.blocks_loaded[current_block_idx]
+            assert current_block is not None
+            current_block.to(device)
+
+            timestep_embedding_kwarg = {}
+            if EMBED_TIMESTEPS:
+                timestep_embedding_kwarg["timestep"] = torch.full(
+                    (BATCH_SIZE,), timestep
+                )
+
+            inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
+
+            outputs: CausalLMOutputWithPast = current_block(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                **timestep_embedding_kwarg,
+            )
+
+            logits = outputs.logits
+            assert logits is not None
+            return logits[:, SEQUENCE_LENGTH:, :]
+
+        def ODE(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
+            """Get the change in hidden embedding with respect to timestep"""
+            noisy_logits = get_logits(noisy_embeddings, timestep)
+            expected = model.embed_output_logits(noisy_logits)
+            # Our model is that the Gaussians scale at x=e^t, so the time derivative dx/dt is x=e^t.
+            return noisy_embeddings - expected
+
+        # TODO: Compute real noise levels
+        noise_levels = torch.linspace(
+            math.log(model.block_boundaries[-1]),
+            math.log(model.block_boundaries[0]),
+            10,
+        )
+        noise_levels = noise_levels.exp()
+        noise_levels = noise_levels.tolist()
+
+        noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
+        for stdev, next_stdev in zip(noise_levels[:-1], noise_levels[1:]):
+            # TODO: Implement alternative samplers
+            dt = math.log(next_stdev) - math.log(stdev)
+            noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
+        t_final = math.log(noise_levels[-1])
+        predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
+        assert predictions.shape == (BATCH_SIZE, SEQUENCE_LENGTH)
+        correct = predictions == token_ids[:, 1:]
+        correct = correct & (masked_positions[:, 1:] == 1)
+
+        num_correct += correct.sum().item()
         num_examples += masked_positions.sum().item() - BATCH_SIZE
 
         progress.set_postfix({"acc": num_correct / num_examples})
