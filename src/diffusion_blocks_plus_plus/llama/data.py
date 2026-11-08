@@ -16,7 +16,7 @@ def trivial_random_dataset(num_samples, sequence_len):
     return datasets.Dataset.from_dict(
         {
             "input_ids": torch.randint(0, 2, (num_samples, sequence_len)),
-            "attention_mask": torch.ones(num_samples, sequence_len),
+            "attention_mask": torch.ones(num_samples, sequence_len, dtype=torch.long),
         }
     )
 
@@ -31,7 +31,7 @@ def predictable_dataset(num_samples, sequence_len):
     return datasets.Dataset.from_dict(
         {
             "input_ids": input_ids,
-            "attention_mask": torch.ones(num_samples, sequence_len),
+            "attention_mask": torch.ones(num_samples, sequence_len, dtype=torch.long),
         }
     )
 

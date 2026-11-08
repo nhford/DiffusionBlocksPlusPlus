@@ -1,6 +1,20 @@
 import torch
 
 
+def mask_to_pos(mask: torch.Tensor) -> torch.Tensor:
+    """Converts a 0-1 token mask into a corresponding position id tensor.
+
+    Args:
+        mask: A token mask with the shape `(B, S)` where `mask[i, j]` is `0` iff
+            the `j`th token is padding and `1` otherwise.
+
+    Returns:
+        A position id tensor of shape `(B, S)` based on index 0, with padding
+        tokens having position `-1`.
+    """
+    return (mask.cumsum(dim=1) * mask - 1).long()
+
+
 def build_diffusion_attention_mask(
     clean_mask: torch.Tensor,
     clean_positions: torch.Tensor,
@@ -144,17 +158,12 @@ def build_train_attention_mask(token_mask: torch.Tensor):
     if len(token_mask.shape) != 2:
         raise ValueError(f"Invalid token mask shape: {token_mask.shape=}")
 
-    device = token_mask.device
-    num_batches, seq_len = token_mask.shape
-
     clean_mask = token_mask[:, :-1]
-    noisy_mask = token_mask[:, 1:]
-    clean_positions = torch.arange(0, seq_len - 1, device=device).broadcast_to(
-        num_batches, seq_len - 1
-    )
-    noisy_positions = torch.arange(1, seq_len, device=device).broadcast_to(
-        num_batches, seq_len - 1
-    )
+    # A noisy token should is relevant iff it is non-padding and it is preceeded
+    # by a non-padding token.
+    noisy_mask = token_mask[:, 1:] & token_mask[:, :-1]
+    clean_positions = mask_to_pos(token_mask)[:, :-1]
+    noisy_positions = mask_to_pos(token_mask)[:, 1:]
 
     return build_diffusion_attention_mask(
         clean_mask=clean_mask,
@@ -162,3 +171,24 @@ def build_train_attention_mask(token_mask: torch.Tensor):
         noisy_mask=noisy_mask,
         noisy_positions=noisy_positions,
     )
+
+
+# def build_decoding_attention_mask(token_mask: torch.Tensor):
+#     """Build the attention mask for auto-regressive DiffusionBlocks
+#     training.
+
+#     Throughout the rest of this documentation, let
+#     `B` be the number of sequences in the current batch, and
+#     `S` be the length of the token sequence being processed.
+
+#     See `build_diffusion_attention_mask` for nore information.
+
+#     Args:
+#         token_mask: A shape `(B, S)` tensor containing 1 at locations
+#             with non-padding tokens, and 0 at locations with padding tokens.
+
+#     Returns:
+#         A tensor of shape `(B, 1, (S * 2 - 2), (S * 2 - 2))` with the
+#         attention mask.
+#     """
+#     pass

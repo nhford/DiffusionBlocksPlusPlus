@@ -12,7 +12,10 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from diffusion_blocks_plus_plus.llama.attention_masks import build_train_attention_mask
+from diffusion_blocks_plus_plus.llama.attention_masks import (
+    build_train_attention_mask,
+    mask_to_pos,
+)
 from diffusion_blocks_plus_plus.llama.data import (
     DiffusionDataGenerator,
     predictable_dataset,
@@ -32,20 +35,6 @@ DEBUG_LEARN_NOISE = True
 DEBUG_DATASET_CAP = 100
 DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
-
-
-def mask_to_pos(mask: torch.Tensor) -> torch.Tensor:
-    """Converts a 0-1 token mask into a corresponding position id tensor.
-
-    Args:
-        mask: A token mask with the shape `(B, S)` where `mask[i, j]` is `0` iff
-            the `j`th token is padding and `1` otherwise.
-
-    Returns:
-        A position id tensor of shape `(B, S)` based on index 0, with padding
-        tokens having position `-1`.
-    """
-    return (mask.cumsum(dim=1) * mask - 1).long()
 
 
 def train_block(
@@ -238,10 +227,11 @@ def evaluate_model(
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
         assert predictions.shape == (BATCH_SIZE, SEQUENCE_LENGTH)
         correct = predictions == token_ids[:, 1:]
-        correct = correct & (masked_positions[:, 1:] == 1)
+        prediction_targets = masked_positions[:, 1:] & masked_positions[:, :-1]
+        correct = correct & prediction_targets
 
         num_correct += correct.sum().item()
-        num_examples += masked_positions.sum().item() - BATCH_SIZE
+        num_examples += prediction_targets.sum().item()
 
         progress.set_postfix({"acc": num_correct / num_examples})
 
