@@ -216,6 +216,8 @@ sbatch.sh
 .slurm_cache/
 test.ipynb
 
+# Model checkpoints
+*.ckpt
 data
 figures
 checkpoints
