@@ -35,9 +35,10 @@ def main(args):
     print("Experiment Name:", nowname)
     logdir = os.path.join("logs", nowname)
     logger = WandbLogger(
-        project=f"dblocks-{args.data_name}",
+        project=os.environ.get("WANDB_PROJECT", f"dblocks-{args.data_name}"),
         name=nowname,
-        version=__import__("uuid").uuid4().hex,
+        version=os.environ.get("WANDB_RUN_ID") or __import__("uuid").uuid4().hex,
+        log_model=True,
         offline=args.debug,
         save_dir=logdir,
         # group=f"{args.data_name}",
@@ -54,7 +55,7 @@ def main(args):
                 monitor="val/acc" if data.val_key is not None else None,
                 mode="max",
                 save_top_k=args.save_top_k,
-                save_on_train_epoch_end=True,
+                save_on_train_epoch_end=data.val_key is None,
                 every_n_epochs=args.save_every_n_epochs
                 if data.val_key is None
                 else None,
@@ -70,12 +71,15 @@ def main(args):
         devices=args.devices,
         logger=logger,
         num_sanity_val_steps=0,
-        # precision="bf16-mixed",
+        precision=args.precision,
     )
     if args.stage == "train":
         trainer.fit(model, data, ckpt_path=args.ckpt_path)
-        if data.test_key is not None:
-            trainer.test(model, data.test_dataloader(), ckpt_path="best")
+        if data.test_key is not None and not args.skip_test_after_fit:
+            trainer.test(
+                model, data.test_dataloader(),
+                ckpt_path="best" if data.val_key is not None else "last",
+            )
     else:
         assert args.ckpt_path is not None
         model.test_kwargs = (
@@ -94,6 +98,9 @@ if __name__ == "__main__":
     parser.add_argument("--devices", type=int, default=1)
     parser.add_argument("--num_epochs", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--validation_fraction", type=float, default=0.0)
+    parser.add_argument("--precision", type=str, default="32-true",
+                        choices=["32-true", "bf16-mixed", "16-mixed"])
     parser.add_argument("--add_rand_aug", action="store_true")
     parser.add_argument("--eval_batch_size", type=int, default=None)
     parser.add_argument("--save_every_n_epochs", type=int, default=5)
@@ -113,6 +120,8 @@ if __name__ == "__main__":
     parser.add_argument("--deepspeed", action="store_true", help="use deepspeed")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_top_k", type=int, default=1)
+    parser.add_argument("--skip_test_after_fit", action="store_true",
+                        help="Finish after training/checkpointing without running test evaluation")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--ckpt_path", type=str, default=None)
     parser.add_argument("--debug", action="store_true")
@@ -122,9 +131,13 @@ if __name__ == "__main__":
     # dblock
     parser.add_argument("--num_blocks", type=int, default=3)
     parser.add_argument("--gamma", type=float, default=0.05)
+    parser.add_argument("--loss_weighting", choices=["official", "per_example"],
+                        default="official",
+                        help="Preserve published code's broadcast weighting or use per-example weights")
     parser.add_argument("--num_inference_steps", type=int, default=None)
     parser.add_argument("--cfg_scale", type=float, default=0.0)
     parser.add_argument("--class_dropout_prob", type=float, default=0.0)
-    parser.add_argument("--ode", type=str, default="euler")
+    parser.add_argument("--ode", type=str, default="euler",
+                        choices=["euler", "heun", "midpoint"])
     args = parser.parse_args()
     main(args)

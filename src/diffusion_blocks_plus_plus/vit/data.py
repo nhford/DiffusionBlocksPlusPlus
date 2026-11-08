@@ -31,9 +31,15 @@ class ImageDataModule(L.LightningDataModule):
         eval_batch_size: int | None = None,
         num_workers: int | None = None,
         add_rand_aug: bool = False,
+        validation_fraction: float = 0.0,
+        split_seed: int = 42,
     ):
         super().__init__()
         self.batch_size = batch_size
+        if not 0 <= validation_fraction < 1:
+            raise ValueError("validation_fraction must be in [0, 1)")
+        self.validation_fraction = validation_fraction
+        self.split_seed = split_seed
         self.eval_batch_size = eval_batch_size or batch_size
         self.num_workers = num_workers if num_workers is not None else os.cpu_count()
         self.collate_fn = None
@@ -102,7 +108,7 @@ class ImageDataModule(L.LightningDataModule):
             batch_size=self.eval_batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
             shuffle=False,
         )
 
@@ -112,7 +118,7 @@ class ImageDataModule(L.LightningDataModule):
             batch_size=self.eval_batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
             shuffle=False,
         )
 
@@ -127,7 +133,7 @@ class CIFAR100DataModule(ImageDataModule):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         add_rand_aug = kwargs.get("add_rand_aug", False)
-        self.val_key = None
+        self.val_key = "validation" if self.validation_fraction else None
         self.test_key = "test"
         # ref: https://github.com/s-chh/PyTorch-Scratch-Vision-Transformer-ViT/blob/main/data_loader.py#L62
         train_transforms = [
@@ -153,6 +159,15 @@ class CIFAR100DataModule(ImageDataModule):
     def setup_dataset(self, data: DatasetDict):
         data = data.remove_columns(["coarse_label"])
         data = data.rename_columns({"img": "image", "fine_label": "label"})
+        if self.validation_fraction:
+            split = data["train"].train_test_split(
+                test_size=self.validation_fraction,
+                seed=self.split_seed,
+                stratify_by_column="label",
+            )
+            data["train"] = split["train"]
+            data["validation"] = split["test"]
+            self.val_key = "validation"
         return data
 
 
@@ -194,6 +209,8 @@ def load_data(args):
         "eval_batch_size": args.eval_batch_size,
         "num_workers": args.num_workers,
         "add_rand_aug": args.add_rand_aug,
+        "validation_fraction": getattr(args, "validation_fraction", 0.0),
+        "split_seed": args.seed,
     }
     if args.data_name == "cifar100":
         return CIFAR100DataModule(**data_kwargs)

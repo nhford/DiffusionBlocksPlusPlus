@@ -292,7 +292,11 @@ class ViTDBlockModel(ViTModel):
             logits.view(-1, self.num_labels), labels.view(-1), reduction="none"
         )
         ce_loss = loss.mean()
-        w = self.get_weights(sigmas)[:, None]
+        w = self.get_weights(sigmas)
+        # The published implementation broadcasts [B, 1] weights against [B]
+        # losses. Preserve that objective for baseline reproduction/resumption.
+        if getattr(self.args, "loss_weighting", "official") == "official":
+            w = w[:, None]
         loss = (loss * w).mean()
 
         loss_dict = {
