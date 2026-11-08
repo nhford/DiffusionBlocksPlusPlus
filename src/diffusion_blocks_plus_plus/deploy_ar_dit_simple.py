@@ -57,6 +57,10 @@ def train_block(
     for i in range(model.num_blocks):
         model.unload_block(i)
     model.load_block(block_idx)
+    current_block = model.blocks_loaded[block_idx]
+    assert current_block is not None
+    current_block.train()
+    model.input_embedding.train()
 
     min_stdev, max_stdev = model.noise_boundaries(block_idx)
 
@@ -88,9 +92,6 @@ def train_block(
         masked_positions = batch["attention_mask"].to(device)
         assert isinstance(masked_positions, torch.Tensor)
         assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
-
-        current_block = model.blocks_loaded[block_idx]
-        assert current_block is not None
 
         features, position_ids, sigmas, attention, labels, labels_mask = (
             data_preprocessor.prepare_training_batch(
@@ -190,6 +191,8 @@ def evaluate_model(
             current_block = model.blocks_loaded[current_block_idx]
             assert current_block is not None
             current_block.to(device)
+            current_block.eval()
+            model.input_embedding.eval()
 
             timestep_embedding_kwarg = {}
             if EMBED_TIMESTEPS:
