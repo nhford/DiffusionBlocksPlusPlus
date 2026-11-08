@@ -27,14 +27,17 @@ LEARNING_RATE = 0.001
 EMBED_TIMESTEPS = False
 
 DEBUG_LEARN_NOISE = True
-DEBUG_NOISE_MIN = 0.5
-DEBUG_NOISE_MAX = 1
-DEBUG_DATASET_CAP = 1000
+DEBUG_DATASET_CAP = 100
 DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
 
 
-def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoader):
+def train_block(
+    model: LlamaDiTForCausalLM,
+    block_idx: int,
+    dataloader: DataLoader,
+    device: torch.device,
+):
     for i in range(model.num_blocks):
         model.unload_block(i)
     model.load_block(block_idx)
@@ -43,7 +46,6 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
 
     data_preprocessor = DiffusionDataGenerator()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to_device(device)
 
     total_params = sum(p.numel() for p in model.loaded_parameters())
@@ -116,6 +118,36 @@ def train_block(model: LlamaDiTForCausalLM, block_idx: int, dataloader: DataLoad
     return results
 
 
+@torch.no_grad
+def evaluate_model(
+    model: LlamaDiTForCausalLM, dataloader: DataLoader, device: torch.device
+):
+    """Predict every token in a dataset using NTP and return the accuracy."""
+
+    # We know the dataset has a length
+    print(f"Evaluating model on {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
+
+    num_examples = 0
+    num_correct = 0
+
+    progress = tqdm(dataloader)
+    for batch_idx, batch in enumerate(progress):
+        token_ids = batch["input_ids"].to(device)
+        assert isinstance(token_ids, torch.Tensor)
+        assert token_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+
+        masked_positions = batch["attention_mask"].to(device)
+        assert isinstance(masked_positions, torch.Tensor)
+        assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+
+        # TODO: Implement evaluation procedure
+
+        # Subtract batch size because <BOS> is not predicted.
+        num_examples += masked_positions.sum().item() - BATCH_SIZE
+
+        progress.set_postfix({"acc": num_correct / num_examples})
+
+
 if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
     assert isinstance(tokenizer, LlamaTokenizerFast)
@@ -134,6 +166,9 @@ if __name__ == "__main__":
 
     if DEBUG_LEARN_NOISE:
         train_dataset = trivial_random_dataset(DEBUG_DATASET_CAP, SEQUENCE_LENGTH + 1)
+        test_dataset = trivial_random_dataset(
+            DEBUG_DATASET_CAP // 10, SEQUENCE_LENGTH + 1
+        )
     else:
         train_split = (
             "train" if DEBUG_DATASET_CAP is None else f"train[:{DEBUG_DATASET_CAP}]"
@@ -142,10 +177,22 @@ if __name__ == "__main__":
         train_dataset = train_dataset.map(
             tokenize_function, batched=True, remove_columns=["text"]
         )
+        test_split = (
+            "valid"
+            if DEBUG_DATASET_CAP is None
+            else f"valid[:{DEBUG_DATASET_CAP // 10}]"
+        )
+        test_dataset = load_dataset("roneneldan/TinyStories", split=test_split)
+        test_dataset = test_dataset.map(
+            tokenize_function, batched=True, remove_columns=["text"]
+        )
     train_dataset = train_dataset.with_format("torch")
+    test_dataset = test_dataset.with_format("torch")
     assert isinstance(train_dataset, dataset_dict.Dataset)
+    assert isinstance(test_dataset, dataset_dict.Dataset)
 
-    dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
+    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
+    test_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
     # See Appendix E.4 in the Sakana.ai paper
     config = LlamaDiTConfig(
@@ -160,8 +207,10 @@ if __name__ == "__main__":
 
     model = LlamaDiTForCausalLM(config)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     for i in range(model.num_blocks - 1, -1, -1):
-        results = train_block(model, i, dataloader)
+        results = train_block(model, i, train_dataloader, device)
 
         name = datetime.now().isoformat() + "_" + str(i)
         os.makedirs("./data", exist_ok=True)
@@ -171,3 +220,5 @@ if __name__ == "__main__":
         generate_plot(name)
 
         model.save_checkpoint(f"./checkpoints/{name}")
+
+    evaluate_model(model, test_dataloader, device)
