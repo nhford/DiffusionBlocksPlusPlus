@@ -20,6 +20,21 @@ def trivial_random_dataset(num_samples, sequence_len):
         }
     )
 
+def predictable_dataset(num_samples, sequence_len):
+    block_size = 4
+    block_count = sequence_len + (block_size - 1) // block_size
+    input_ids = torch.randint(0, 2, (num_samples, block_count, 1))
+    input_ids = input_ids.broadcast_to((num_samples, block_count, block_size))
+    input_ids = input_ids.reshape((num_samples, -1))
+    input_ids = input_ids[:, :sequence_len]
+
+    return datasets.Dataset.from_dict(
+        {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones(num_samples, sequence_len),
+        }
+    )
+
 
 class TextDataModule(L.LightningDataModule):
     data_name = None

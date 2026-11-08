@@ -15,6 +15,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from diffusion_blocks_plus_plus.llama.attention_masks import build_train_attention_mask
 from diffusion_blocks_plus_plus.llama.data import (
     DiffusionDataGenerator,
+    predictable_dataset,
     trivial_random_dataset,
 )
 from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
@@ -259,10 +260,8 @@ if __name__ == "__main__":
         return result
 
     if DEBUG_LEARN_NOISE:
-        train_dataset = trivial_random_dataset(DEBUG_DATASET_CAP, SEQUENCE_LENGTH + 1)
-        test_dataset = trivial_random_dataset(
-            DEBUG_DATASET_CAP // 10, SEQUENCE_LENGTH + 1
-        )
+        train_dataset = predictable_dataset(DEBUG_DATASET_CAP, SEQUENCE_LENGTH + 1)
+        test_dataset = predictable_dataset(DEBUG_DATASET_CAP // 10, SEQUENCE_LENGTH + 1)
     else:
         train_split = (
             "train" if DEBUG_DATASET_CAP is None else f"train[:{DEBUG_DATASET_CAP}]"
