@@ -278,7 +278,7 @@ if __name__ == "__main__":
     assert isinstance(test_dataset, dataset_dict.Dataset)
 
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
-    test_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
     # See Appendix E.4 in the Sakana.ai paper
     config = LlamaDiTConfig(
