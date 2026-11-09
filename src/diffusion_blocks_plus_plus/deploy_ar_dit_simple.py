@@ -17,10 +17,11 @@ from diffusion_blocks_plus_plus.llama.attention_masks import (
     mask_to_pos,
 )
 from diffusion_blocks_plus_plus.llama.data import (
-    DiffusionDataGenerator,
     predictable_dataset,
+    prepare_training_batch,
     trivial_random_dataset,
 )
+from diffusion_blocks_plus_plus.llama.noise_level_manager import NoiseLevelDistribution
 from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
 
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
@@ -30,6 +31,7 @@ SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
 LEARNING_RATE = 0.001
 EMBED_TIMESTEPS = False
+EVAL_NUM_STEPS = 10
 NUM_EPOCHS = 1
 
 DEBUG_LEARN_NOISE = True
@@ -43,6 +45,7 @@ def train_block(
     block_idx: int,
     dataloader: DataLoader,
     device: torch.device,
+    noise_schedule: NoiseLevelDistribution,
 ):
     for i in range(model.num_blocks):
         model.unload_block(i)
@@ -53,8 +56,6 @@ def train_block(
     model.input_embedding.train()
 
     min_stdev, max_stdev = model.noise_boundaries(block_idx)
-
-    data_preprocessor = DiffusionDataGenerator()
 
     model.to_device(device)
 
@@ -79,12 +80,13 @@ def train_block(
         assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
 
         features, position_ids, sigmas, attention, labels, labels_mask = (
-            data_preprocessor.prepare_training_batch(
+            prepare_training_batch(
                 input_ids=token_ids,
                 input_embeddings=model.embed_input_ids(token_ids),
                 token_mask=masked_positions,
-                min_stdev=min_stdev,
-                max_stdev=max_stdev,
+                block_min_stdev=min_stdev,
+                block_max_stdev=max_stdev,
+                distribution=noise_schedule,
             )
         )
 
@@ -121,13 +123,16 @@ def train_block(
 
 
 def train_model(
-    model: LlamaDiTForCausalLM, dataloader: DataLoader, device: torch.device
+    model: LlamaDiTForCausalLM,
+    dataloader: DataLoader,
+    device: torch.device,
+    noise_schedule: NoiseLevelDistribution,
 ):
     print(f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
 
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
-            results = train_block(model, block_idx, dataloader, device)
+            results = train_block(model, block_idx, dataloader, device, noise_schedule)
 
             name = datetime.now().isoformat() + "_block_" + str(block_idx)
             os.makedirs("./data", exist_ok=True)
@@ -142,7 +147,10 @@ def train_model(
 
 @torch.no_grad
 def evaluate_model(
-    model: LlamaDiTForCausalLM, dataloader: DataLoader, device: torch.device
+    model: LlamaDiTForCausalLM,
+    dataloader: DataLoader,
+    device: torch.device,
+    noise_schedule: NoiseLevelDistribution,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
 
@@ -225,14 +233,7 @@ def evaluate_model(
             # Our model is that the Gaussians scale at x=e^t, so the time derivative dx/dt is x=e^t.
             return noisy_embeddings - expected
 
-        # TODO: Compute real noise levels
-        noise_levels = torch.linspace(
-            math.log(model.block_boundaries[-1]),
-            math.log(model.block_boundaries[0]),
-            10,
-        )
-        noise_levels = noise_levels.exp()
-        noise_levels = noise_levels.tolist()
+        noise_levels = noise_schedule.get_discrete_stdevs(EVAL_NUM_STEPS)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
         for stdev, next_stdev in tqdm(
@@ -300,6 +301,8 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
     test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
+    noise_schedule = NoiseLevelDistribution()
+
     # See Appendix E.4 in the Sakana.ai paper
     config = LlamaDiTConfig(
         vocab_size=32000,
@@ -309,12 +312,13 @@ if __name__ == "__main__":
         intermediate_size=3072,
         num_blocks=4,
         use_timestep_embedding=EMBED_TIMESTEPS,
+        block_boundaries=noise_schedule.get_block_stdevs(4),
     )
 
     model = LlamaDiTForCausalLM(config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_model(model, train_dataloader, device)
+    train_model(model, train_dataloader, device, noise_schedule)
 
-    evaluate_model(model, test_dataloader, device)
+    evaluate_model(model, test_dataloader, device, noise_schedule)

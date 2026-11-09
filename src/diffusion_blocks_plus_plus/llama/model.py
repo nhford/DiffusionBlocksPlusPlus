@@ -37,17 +37,17 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-)
-from transformers.models.llama.modeling_llama import (
-    KwargsForCausalLM,
-    LlamaAttention,
-    LlamaMLP,
-    LlamaRMSNorm,
-    LlamaRotaryEmbedding,
-)
+from transformers.modeling_outputs import (BaseModelOutputWithPast,
+                                           CausalLMOutputWithPast)
+from transformers.models.llama.modeling_llama import (KwargsForCausalLM,
+                                                      LlamaAttention, LlamaMLP,
+                                                      LlamaRMSNorm,
+                                                      LlamaRotaryEmbedding)
+
+from diffusion_blocks_plus_plus.llama.noise_level_manager import \
+    NoiseLevelDistribution
+
+DEFAULT_SCHEDULE = NoiseLevelDistribution()
 
 
 class AdaRMS(nn.Module):
@@ -213,10 +213,9 @@ class LlamaDiTConfig(LlamaConfig):
                 f"The number of blocks ({self.num_blocks}) should divide the number of hidden layers ({self.num_hidden_layers})."
             )
         if block_boundaries is None:
-            # TODO We use equal noise partitioning for now.
-            self.block_boundaries = [
-                x / num_blocks * 100 + 0.01 for x in range(0, self.num_blocks + 1)
-            ]
+            self.block_boundaries = DEFAULT_SCHEDULE.get_block_stdevs(self.num_blocks)
+        else:
+            self.block_boundaries = block_boundaries
 
 
 class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
