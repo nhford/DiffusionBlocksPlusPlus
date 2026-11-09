@@ -13,12 +13,15 @@ from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from diffusion_blocks_plus_plus.llama.attention_masks import (
-    build_train_attention_mask, mask_to_pos)
-from diffusion_blocks_plus_plus.llama.data import (predictable_dataset,
-                                                   prepare_training_batch,
-                                                   trivial_random_dataset)
-from diffusion_blocks_plus_plus.llama.noise_level_manager import \
-    NoiseLevelDistribution
+    build_train_attention_mask,
+    mask_to_pos,
+)
+from diffusion_blocks_plus_plus.llama.data import (
+    predictable_dataset,
+    prepare_training_batch,
+    trivial_random_dataset,
+)
+from diffusion_blocks_plus_plus.llama.noise_level_manager import NoiseLevelDistribution
 from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
 
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
@@ -29,6 +32,7 @@ BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
 LEARNING_RATE = 0.001
 EMBED_TIMESTEPS = False
 EVAL_NUM_STEPS = 10
+NUM_EPOCHS = 1
 
 DEBUG_LEARN_NOISE = True
 DEBUG_DATASET_CAP = 100
@@ -55,18 +59,13 @@ def train_block(
 
     model.to_device(device)
 
-    total_params = sum(p.numel() for p in model.loaded_parameters())
-
-    print(f"Training block {block_idx} (sigma in [{min_stdev}, {max_stdev}]).")
-    print(f"Training {total_params/1e9:.2f}B parameters.")
-
     optimizer = AdamW(model.loaded_parameters(), lr=LEARNING_RATE)
 
     memory_tracker = MemoryTracker(model, optimizer, device)
 
     results = []
 
-    progress = tqdm(dataloader)
+    progress = tqdm(dataloader, leave=False, desc="Batch")
     for batch_idx, batch in enumerate(progress):
         memory_tracker.reset()
         memory_tracker.measure_mem_weights()
@@ -119,8 +118,31 @@ def train_block(
         results.append(
             {"batch_idx": batch_idx, "loss": loss.item(), **memory_tracker.as_dict()}
         )
-        progress.set_postfix({"loss": loss.item(), **memory_tracker.tqdm_dict()})
+        progress.set_postfix({"loss": loss.item()})
     return results
+
+
+def train_model(
+    model: LlamaDiTForCausalLM,
+    dataloader: DataLoader,
+    device: torch.device,
+    noise_schedule: NoiseLevelDistribution,
+):
+    print(f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
+
+    for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
+        for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
+            results = train_block(model, block_idx, dataloader, device, noise_schedule)
+
+            name = datetime.now().isoformat() + "_block_" + str(block_idx)
+            os.makedirs("./data", exist_ok=True)
+            results = pandas.DataFrame(results)
+            results.to_csv(f"./data/{name}.csv")
+
+            generate_plot(name)
+
+    name = datetime.now().isoformat()
+    model.save_checkpoint(f"./checkpoints/{name}")
 
 
 @torch.no_grad
@@ -138,7 +160,7 @@ def evaluate_model(
     num_examples = 0
     num_correct = 0
 
-    progress = tqdm(dataloader)
+    progress = tqdm(dataloader, desc="Batch")
     for batch_idx, batch in enumerate(progress):
         token_ids = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor)
@@ -214,7 +236,11 @@ def evaluate_model(
         noise_levels = noise_schedule.get_discrete_stdevs(EVAL_NUM_STEPS)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
-        for stdev, next_stdev in zip(noise_levels[:-1], noise_levels[1:]):
+        for stdev, next_stdev in tqdm(
+            list(zip(noise_levels[:-1], noise_levels[1:])),
+            desc="Denoise Step",
+            leave=False,
+        ):
             # TODO: Implement alternative samplers
             dt = math.log(next_stdev) - math.log(stdev)
             noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
@@ -293,16 +319,6 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    for i in range(model.num_blocks - 1, -1, -1):
-        results = train_block(model, i, train_dataloader, device, noise_schedule)
-
-        name = datetime.now().isoformat() + "_" + str(i)
-        os.makedirs("./data", exist_ok=True)
-        results = pandas.DataFrame(results)
-        results.to_csv(f"./data/{name}.csv")
-
-        generate_plot(name)
-
-        model.save_checkpoint(f"./checkpoints/{name}")
+    train_model(model, train_dataloader, device, noise_schedule)
 
     evaluate_model(model, test_dataloader, device, noise_schedule)
