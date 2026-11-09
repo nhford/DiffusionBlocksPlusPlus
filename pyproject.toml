@@ -17,6 +17,7 @@ dependencies = [
     "flash-attn==2.7.4.post1; sys_platform == 'linux'",
     "isort>=9.0.2",
     "matplotlib>=3.11.2",
+    "psutil>=7.2.2",
 ]
 
 
@@ -35,3 +36,8 @@ torchvision = [
 
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
