@@ -32,11 +32,18 @@ def main(args):
         nowname = now + f"-{args.model_type}" + args.postfix
         if nowname.startswith("_"):
             nowname = nowname[1:]
-    print("Experiment Name:", nowname)
+    run_name = nowname
+    if args.stage == "test":
+        run_name = f"{args.data_name}-{args.model_type}"
+        if args.model_type == "dblock":
+            run_name += f"-{args.ode}-{model.num_inference_steps}pts"
+        run_name += f"-seed{args.seed}{args.postfix}"
+
+    print("Experiment Name:", run_name)
     logdir = os.path.join("logs", nowname)
     logger = WandbLogger(
         project=os.environ.get("WANDB_PROJECT", f"dblocks-{args.data_name}"),
-        name=nowname,
+        name=run_name,
         version=os.environ.get("WANDB_RUN_ID") or __import__("uuid").uuid4().hex,
         log_model=True,
         offline=args.debug,
