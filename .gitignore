@@ -222,5 +222,6 @@ data
 figures
 checkpoints
 
-# Local lab notebook artifacts
+# Local notebook artifacts
 /lab_outputs/
+/inference_results/cpu_runs/
