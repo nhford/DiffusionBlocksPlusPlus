@@ -1,3 +1,4 @@
+import argparse
 import math
 import os
 from datetime import datetime
@@ -127,22 +128,19 @@ def train_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
-):
+) -> list[dict]:
     print(f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
+
+    results = []
 
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
-            results = train_block(model, block_idx, dataloader, device, noise_schedule)
+            block_results = train_block(
+                model, block_idx, dataloader, device, noise_schedule
+            )
+            results += [{"block_idx": block_idx, **row} for row in block_results]
 
-            name = datetime.now().isoformat() + "_block_" + str(block_idx)
-            os.makedirs("./data", exist_ok=True)
-            results = pandas.DataFrame(results)
-            results.to_csv(f"./data/{name}.csv")
-
-            generate_plot(name)
-
-    name = datetime.now().isoformat()
-    model.save_checkpoint(f"./checkpoints/{name}")
+    return results
 
 
 @torch.no_grad
@@ -154,6 +152,7 @@ def evaluate_model(
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
 
+    model.input_embedding.to(device)
     # We know the dataset has a length
     print(f"Evaluating model on {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
 
@@ -258,6 +257,34 @@ def evaluate_model(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog="ProgramName",
+        description="What the program does",
+        epilog="Text at the bottom of help",
+    )
+
+    parser.add_argument("action")
+    parser.add_argument("--from-ckpt")
+    parser.add_argument("-c", "--to-ckpt")
+    parser.add_argument("-d", "--data-path")
+
+    args = parser.parse_args()
+
+    if args.action not in ["train", "evaluate"]:
+        raise ValueError("Must choose train or evaluate")
+    action = args.action
+
+    timestamp = datetime.now().isoformat()
+    checkpoint_save_path = f"./checkpoints/ckpt-{timestamp}"
+    if args.to_ckpt is not None:
+        checkpoint_save_path = args.to_ckpt
+
+    checkpoint_load_path = args.from_ckpt
+
+    metrics_save_path = f"./data/{timestamp}.csv"
+    if args.data_path is not None:
+        metrics_save_path = args.data_path
+
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
     assert isinstance(tokenizer, LlamaTokenizerFast)
     # This is because the attention mask must not attend to padding tokens.
@@ -315,10 +342,17 @@ if __name__ == "__main__":
         block_boundaries=noise_schedule.get_block_stdevs(4),
     )
 
-    model = LlamaDiTForCausalLM(config)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_model(model, train_dataloader, device, noise_schedule)
+    model = LlamaDiTForCausalLM(config)
+    if checkpoint_load_path is not None:
+        model.load_checkpoint(checkpoint_load_path)
 
-    evaluate_model(model, test_dataloader, device, noise_schedule)
+    if action == "train":
+        results_dict = train_model(model, train_dataloader, device, noise_schedule)
+
+        model.save_checkpoint(checkpoint_save_path)
+        pandas.DataFrame(results_dict).to_csv(metrics_save_path)
+
+    if action == "evaluate":
+        evaluate_model(model, test_dataloader, device, noise_schedule)
