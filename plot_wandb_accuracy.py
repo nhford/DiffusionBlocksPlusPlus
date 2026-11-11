@@ -16,7 +16,7 @@ RESULTS = Path(__file__).resolve().parent / "inference_results"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", type=Path, nargs="?", default=RESULTS / "wandb_accuracy.csv")
-    parser.add_argument("--output", type=Path, default=RESULTS / "wandb_accuracy.png")
+    parser.add_argument("--output", type=Path, default=RESULTS / "normalized-full-model-test-accuracy.png")
     args = parser.parse_args()
 
     with args.csv.open(newline="", encoding="utf-8-sig") as handle:

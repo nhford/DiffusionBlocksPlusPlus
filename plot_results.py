@@ -59,8 +59,8 @@ def main():
     ax.grid(True, alpha=0.22)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(frameon=False)
-    for extension in ["png", "pdf"]:
-        output = args.inference_results_dir / f"test_accuracy.{extension}"
+    for filename in ["unnormalized-partial-model-test-accuracy.png", "test_accuracy.pdf"]:
+        output = args.inference_results_dir / filename
         fig.savefig(output, dpi=200)
         print(output)
     plt.close(fig)
