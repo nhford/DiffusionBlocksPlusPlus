@@ -746,25 +746,19 @@ class LlamaDiTForCausalLM:
     Note that because this module does weird things with weight offloading, this is not a PyTorch module.
     """
 
-    def __init__(self, config: LlamaDiTConfig, save_path: str | None = None):
+    def __init__(self, config: LlamaDiTConfig):
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.padding_idx = config.pad_token_id
         self.num_blocks = config.num_blocks
         self.rms_norm_eps = config.rms_norm_eps
-        if save_path is None:
-            self.save_path = tempfile.mkdtemp(prefix="llama_dit_for_causal_lm")
-        else:
-            self.save_path = save_path
+        self.save_path = tempfile.mkdtemp(prefix="llama_dit_for_causal_lm")
         self.block_boundaries = [*config.block_boundaries]
 
         # Embedding is always loaded in memory
-        embedding_path = f"{self.save_path}/input_embedding.pth"
         self.input_embedding = nn.Embedding(
             self.vocab_size, self.hidden_size, self.padding_idx
         )
-        if os.path.exists(embedding_path):
-            self.input_embedding.load_state_dict(torch.load(embedding_path))
 
         for block_idx in range(self.num_blocks):
             block_path = f"{self.save_path}/{block_idx}"
@@ -791,10 +785,6 @@ class LlamaDiTForCausalLM:
         if current_block is not None:
             current_block.save_pretrained(block_path)
 
-    def save_embedding(self):
-        embedding_path = f"{self.save_path}/input_embedding.pth"
-        torch.save(self.input_embedding.state_dict, embedding_path)
-
     def unload_block(self, block_idx: int):
         self.save_block(block_idx)
         current_block = self.blocks_loaded[block_idx]
@@ -808,8 +798,16 @@ class LlamaDiTForCausalLM:
     def save_checkpoint(self, path: str):
         for i in range(self.num_blocks):
             self.save_block(i)
-        self.save_embedding()
+        embedding_path = f"{self.save_path}/input_embedding.pth"
+        torch.save(self.input_embedding.state_dict(), embedding_path)
         shutil.copytree(self.save_path, path)
+
+    def load_checkpoint(self, path: str):
+        for i in range(self.num_blocks):
+            self.unload_block(i)
+        shutil.copytree(path, self.save_path, dirs_exist_ok=True)
+        embedding_path = f"{self.save_path}/input_embedding.pth"
+        self.input_embedding.load_state_dict(torch.load(embedding_path))
 
     def to_device(self, device):
         for i in range(self.num_blocks):
