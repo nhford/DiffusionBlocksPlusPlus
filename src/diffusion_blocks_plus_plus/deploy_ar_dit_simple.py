@@ -312,9 +312,9 @@ if __name__ == "__main__":
             tokenize_function, batched=True, remove_columns=["text"]
         )
         test_split = (
-            "valid"
+            "validation"
             if DEBUG_DATASET_CAP is None
-            else f"valid[:{DEBUG_DATASET_CAP // 10}]"
+            else f"validation[:{DEBUG_DATASET_CAP // 10}]"
         )
         test_dataset = load_dataset("roneneldan/TinyStories", split=test_split)
         test_dataset = test_dataset.map(
