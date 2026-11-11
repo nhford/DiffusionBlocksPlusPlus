@@ -138,9 +138,6 @@ if __name__ == "__main__":
     # dblock
     parser.add_argument("--num_blocks", type=int, default=3)
     parser.add_argument("--gamma", type=float, default=0.05)
-    parser.add_argument("--loss_weighting", choices=["official", "per_example"],
-                        default="official",
-                        help="Preserve published code's broadcast weighting or use per-example weights")
     parser.add_argument("--num_inference_steps", type=int, default=None)
     parser.add_argument("--cfg_scale", type=float, default=0.0)
     parser.add_argument("--class_dropout_prob", type=float, default=0.0)

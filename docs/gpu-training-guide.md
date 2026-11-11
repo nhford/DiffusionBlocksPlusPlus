@@ -177,7 +177,7 @@ python -u -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 \
   --batch_size 128 --eval_batch_size 128 --num_workers 4 \
   --lr 0.001 --weight_decay 0.01 --gamma 0.05 \
   --scheduler_type constant_with_warmup --num_warmup_steps 0 \
-  --validation_fraction 0 --loss_weighting official \
+  --validation_fraction 0 \
   --num_inference_steps 3 --save_every_n_epochs 5 \
   --precision 32-true --seed 42 --skip_test_after_fit \
   --ckpt_path /workspace/DiffusionBlocksPlusPlus/inference_results/dblock-checkpoint-150epochs.ckpt
@@ -248,21 +248,12 @@ especially on coarse grids. Treat the comparison as an experiment.
 
 ## Local fixes and verification
 
-The companion source changes preserve the published broadcast loss by default
-(`--loss_weighting official`) and expose corrected per-example weighting as
-`--loss_weighting per_example`; retain all
-validation/test examples; add an optional stratified training holdout; save
+The companion source changes retain all validation/test examples; add an optional stratified training holdout; save
 validation-selected checkpoints after validation; use the last checkpoint for
 post-training evaluation when no validation set exists; support
 `--skip_test_after_fit` for this training-only rental; expose precision; and
 honor `WANDB_PROJECT`/`WANDB_RUN_ID` with checkpoint artifact logging.
 
-Per-example weighting changes the published training objective. Do not enable it
-for a faithful continuation of the existing checkpoint. Previously trained
-checkpoints still load. Pin and record the source revision for each experiment.
-
-Verified locally: edited files parse; the actual training-loss method matches
-per-example weighted CE on a synthetic batch and backpropagates finite gradients;
-evaluation loaders retain partial batches. Full data-loading, Lightning/W&B and
+Verified locally: edited files parse and evaluation loaders retain partial batches. Full data-loading, Lightning/W&B and
 CUDA integration were not run locally because Lightning is absent from the local
 Python environment. The rental-machine pilot is required before a long run.
