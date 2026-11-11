@@ -54,10 +54,6 @@ def main():
     ax.grid(axis="y", alpha=0.23)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(loc="lower right", ncols=2, frameon=False)
-    fig.supxlabel(
-        f"W&B export · {len(measured)} of {len(latest)} selected runs report test accuracy",
-        fontsize=9, color="#4b5563",
-    )
     fig.savefig(args.output, dpi=200)
     plt.close(fig)
 
