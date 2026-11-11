@@ -221,9 +221,3 @@ test.ipynb
 data
 figures
 checkpoints
-
-# Local notebook artifacts
-/lab_outputs/
-/inference_results/cpu_runs/
-docs/
-*.ipynb
