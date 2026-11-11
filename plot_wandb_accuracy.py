@@ -24,8 +24,14 @@ def main():
                 if row["Name"] != "2026-11-09T08-12-36-vit-baseline500"]
     latest = sorted(rows, key=lambda row: row["Created"], reverse=True)[:21]
     measured = [row for row in latest if row["test/acc"].strip()]
-    vit, = [float(row["test/acc"]) for row in measured
-            if row["Name"] == "cifar100-vit-seed42"]
+    vit_run, = [row for row in measured if row["Name"] == "cifar100-vit-seed42"]
+    vit_accuracy = float(vit_run["test/acc"])
+    solver_runs = [row for row in measured if row["Name"].startswith("cifar100-dblock-")]
+    (blocks, solver_lr, seed), = {
+        (int(row["num_blocks"]), float(row["lr"]), int(row["seed"]))
+        for row in solver_runs
+    }
+    vit_lr = float(vit_run["lr"])
 
     fig, ax = plt.subplots(figsize=(9, 5), layout="constrained")
     ticks = set()
@@ -36,21 +42,26 @@ def main():
     ):
         points = sorted(
             (int(row["num_inference_steps"]), float(row["test/acc"]))
-            for row in measured
+            for row in solver_runs
             if row["Name"].startswith(f"cifar100-dblock-{solver.lower()}-")
         )
         steps, accuracy = zip(*points)
         ticks.update(steps)
         ax.plot(steps, accuracy, color=color, marker=marker, linewidth=2, label=solver)
 
-    ax.axhline(vit, color="#4b5563", linestyle="--", label=f"ViT ({vit:.2%})")
+    ax.axhline(vit_accuracy, color="#4b5563", linestyle="--", label=f"ViT ({vit_accuracy:.2%})")
     ax.set_xscale("log", base=2)
     ax.set_xticks(sorted(ticks), labels=[str(step) for step in sorted(ticks)])
     ax.minorticks_off()
     ax.yaxis.set_major_locator(MultipleLocator(0.01))
     ax.yaxis.set_major_formatter(PercentFormatter(1, decimals=0))
-    ax.set(xlabel="Inference points (log scale)", ylabel="Test accuracy",
-           title="CIFAR-100 test accuracy by ODE solver")
+    ax.set(xlabel="Inference points (log scale)", ylabel="Test accuracy")
+    fig.suptitle("CIFAR-100 test accuracy by ODE solver", fontsize=13)
+    ax.set_title(
+        f"DiffusionBlocks++: {blocks} blocks, LR {solver_lr:g}  ·  ViT: LR {vit_lr:g}"
+        f"\nW&B run configuration · evaluation seed {seed}",
+        fontsize=10, color="#4b5563",
+    )
     ax.grid(axis="y", alpha=0.23)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(loc="lower right", ncols=2, frameon=False)
