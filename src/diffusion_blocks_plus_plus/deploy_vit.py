@@ -16,6 +16,20 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
+class SaveMilestones(L.Callback):
+    def __init__(self, directory, epochs, stop_after):
+        self.directory = directory
+        self.epochs = set(epochs)
+        self.stop_after = stop_after
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch + 1
+        if epoch in self.epochs or epoch == self.stop_after:
+            trainer.save_checkpoint(os.path.join(self.directory, f"milestone-{epoch:03d}.ckpt"))
+        if epoch == self.stop_after:
+            trainer.should_stop = True
+
+
 def main(args):
     L.seed_everything(args.seed)
 
@@ -69,6 +83,7 @@ def main(args):
                 save_last=True,
             ),
             LearningRateMonitor(logging_interval="step"),
+            SaveMilestones(logdir, args.checkpoint_epochs, args.stop_after_epoch),
         ],
         accumulate_grad_batches=args.accumulate_grad_batches,
         gradient_clip_val=1.0,
@@ -82,7 +97,11 @@ def main(args):
     )
     if args.stage == "train":
         trainer.fit(model, data, ckpt_path=args.ckpt_path)
-        if data.test_key is not None and not args.skip_test_after_fit:
+        if (
+            data.test_key is not None
+            and not args.skip_test_after_fit
+            and args.stop_after_epoch is None
+        ):
             trainer.test(
                 model, data.test_dataloader(),
                 ckpt_path="best" if data.val_key is not None else "last",
@@ -109,6 +128,7 @@ if __name__ == "__main__":
     parser.add_argument("--precision", type=str, default="32-true",
                         choices=["32-true", "bf16-mixed", "16-mixed"])
     parser.add_argument("--add_rand_aug", action="store_true")
+    parser.add_argument("--no_padded_crop", action="store_true", help="Disable the padded CIFAR-100 training crop")
     parser.add_argument("--eval_batch_size", type=int, default=None)
     parser.add_argument("--save_every_n_epochs", type=int, default=5)
     parser.add_argument("--accumulate_grad_batches", type=int, default=1)
@@ -123,7 +143,11 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--optimizer", type=str, default="adamw")
-    parser.add_argument("--num_warmup_steps", type=int, default=0)
+    warmup = parser.add_mutually_exclusive_group()
+    warmup.add_argument("--num_warmup_steps", type=int, default=0)
+    warmup.add_argument("--num_warmup_epochs", type=int)
+    parser.add_argument("--checkpoint_epochs", type=int, nargs="+", default=[])
+    parser.add_argument("--stop_after_epoch", type=int, help="Save and pause while keeping the full LR schedule")
     parser.add_argument("--deepspeed", action="store_true", help="use deepspeed")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_top_k", type=int, default=1)
@@ -144,4 +168,10 @@ if __name__ == "__main__":
     parser.add_argument("--ode", type=str, default="euler",
                         choices=["euler", "heun", "midpoint"])
     args = parser.parse_args()
+    if any(not 1 <= epoch <= args.num_epochs for epoch in args.checkpoint_epochs):
+        parser.error("checkpoint epochs must be between 1 and num_epochs")
+    if args.stop_after_epoch is not None and not 1 <= args.stop_after_epoch <= args.num_epochs:
+        parser.error("stop_after_epoch must be between 1 and num_epochs")
+    if args.num_warmup_epochs is not None and not 0 <= args.num_warmup_epochs <= args.num_epochs:
+        parser.error("num_warmup_epochs must be between 0 and num_epochs")
     main(args)

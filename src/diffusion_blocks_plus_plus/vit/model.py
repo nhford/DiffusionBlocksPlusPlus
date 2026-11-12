@@ -38,6 +38,7 @@ class ViTModel(L.LightningModule):
             prefix="val/",
         )
         self.test_metrics = self.valid_metrics.clone(prefix="test/")
+        self.test_kwargs = {}
         self.save_hyperparameters(args)
 
     def configure_model(self):
@@ -52,11 +53,17 @@ class ViTModel(L.LightningModule):
             lr=self.args.lr,
             weight_decay=self.args.weight_decay,
         )
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup_steps = self.args.num_warmup_steps
+        warmup_epochs = getattr(self.args, "num_warmup_epochs", None)
+        if warmup_epochs is not None:
+            steps_per_epoch = total_steps // self.trainer.max_epochs
+            warmup_steps = warmup_epochs * steps_per_epoch
         scheduler = get_scheduler(
             name=self.args.scheduler_type,
             optimizer=optimizer,
-            num_warmup_steps=self.args.num_warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
             scheduler_specific_kwargs=self.args.scheduler_specific_kwargs,
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
@@ -70,9 +77,9 @@ class ViTModel(L.LightningModule):
         logits = self(pixel_values=pixel_values, **kwargs)
         if return_metrics:
             if step == "val":
-                return self.valid_metrics(
-                    logits.view(-1, self.num_labels), labels.view(-1)
-                )
+                metrics = self.valid_metrics(logits, labels)
+                metrics["val/loss"] = F.cross_entropy(logits, labels)
+                return metrics
             elif step == "test":
                 return self.test_metrics(
                     logits.view(-1, self.num_labels), labels.view(-1)
@@ -106,6 +113,7 @@ class ViTModel(L.LightningModule):
         combined_kwargs = {**model_kwargs, **self.test_kwargs}
         res = self.shared_step(batch, step="test", return_metrics=True, **combined_kwargs)
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
+        self.log("test/examples", float(batch_size), reduce_fx="sum", sync_dist=True)
 
 
 class ViTDBlockModel(ViTModel):
@@ -141,9 +149,6 @@ class ViTDBlockModel(ViTModel):
                 "class_dropout_prob": self.class_dropout_prob,
             },
         )
-
-        # add diffusion step method
-        self.test_kwargs = {}
 
     def _load_from_state_dict(
         self, state_dict, prefix, local_metadata, strict,

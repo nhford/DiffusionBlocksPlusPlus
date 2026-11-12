@@ -130,7 +130,7 @@ class CIFAR100DataModule(ImageDataModule):
     mean = [0.5071, 0.4867, 0.4408]
     std = [0.2675, 0.2565, 0.2761]
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, padded_crop=True, **kwargs):
         super().__init__(**kwargs)
         add_rand_aug = kwargs.get("add_rand_aug", False)
         self.val_key = "validation" if self.validation_fraction else None
@@ -139,9 +139,10 @@ class CIFAR100DataModule(ImageDataModule):
         train_transforms = [
             T.Lambda(lambda x: x.convert("RGB")),
             T.Resize([self.image_size, self.image_size]),
-            T.RandomCrop(self.image_size, padding=4),
-            T.RandomHorizontalFlip(),
         ]
+        if padded_crop:
+            train_transforms.append(T.RandomCrop(self.image_size, padding=4))
+        train_transforms.append(T.RandomHorizontalFlip(p=0.5))
         if add_rand_aug:
             train_transforms.extend([T.RandAugment()])
         val_transforms = [
@@ -213,7 +214,9 @@ def load_data(args):
         "split_seed": args.seed,
     }
     if args.data_name == "cifar100":
-        return CIFAR100DataModule(**data_kwargs)
+        return CIFAR100DataModule(
+            padded_crop=not getattr(args, "no_padded_crop", False), **data_kwargs
+        )
     elif args.data_name == "tiny-imagenet":
         return TinyImageNetDataModule(**data_kwargs)
     else:
