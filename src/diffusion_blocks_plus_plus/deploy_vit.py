@@ -64,11 +64,11 @@ def main(args):
         save_dir=logdir,
         # group=f"{args.data_name}",
     )
+    max_epochs = args.num_epochs
+    if args.model_type == "dblock" and not args.dblock_literal_epochs:
+        max_epochs *= args.num_blocks
     trainer = L.Trainer(
-        max_epochs=args.num_epochs
-        if args.model_type != "dblock"
-        else args.num_epochs
-        * args.num_blocks,  # to align total number of iterations across the entire network because one step corresponds to one block
+        max_epochs=max_epochs,
         check_val_every_n_epoch=args.save_every_n_epochs,
         callbacks=[
             ModelCheckpoint(
@@ -161,6 +161,9 @@ if __name__ == "__main__":
     )
     # dblock
     parser.add_argument("--num_blocks", type=int, default=3)
+    parser.add_argument("--dblock_literal_epochs", action="store_true", help="Count actual loader passes for DiffusionBlocks")
+    parser.add_argument("--dblock_paper_grid", action="store_true", help="Route grid boundaries to the lower-noise block")
+    parser.add_argument("--dblock_plain_ce", action="store_true", help="Use unweighted cross-entropy for DiffusionBlocks")
     parser.add_argument("--gamma", type=float, default=0.05)
     parser.add_argument("--num_inference_steps", type=int, default=None)
     parser.add_argument("--cfg_scale", type=float, default=0.0)
@@ -168,6 +171,11 @@ if __name__ == "__main__":
     parser.add_argument("--ode", type=str, default="euler",
                         choices=["euler", "heun", "midpoint"])
     args = parser.parse_args()
+    if args.model_type == "dblock":
+        if args.num_blocks < 1 or 12 % args.num_blocks:
+            parser.error("num_blocks must be a positive divisor of the 12 ViT layers")
+        if args.dblock_paper_grid and (args.num_inference_steps or 0) < args.num_blocks + 1:
+            parser.error("dblock_paper_grid requires at least num_blocks + 1 explicit grid points")
     if any(not 1 <= epoch <= args.num_epochs for epoch in args.checkpoint_epochs):
         parser.error("checkpoint epochs must be between 1 and num_epochs")
     if args.stop_after_epoch is not None and not 1 <= args.stop_after_epoch <= args.num_epochs:
