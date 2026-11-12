@@ -163,6 +163,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_blocks", type=int, default=3)
     parser.add_argument("--dblock_literal_epochs", action="store_true", help="Count actual loader passes for DiffusionBlocks")
     parser.add_argument("--dblock_paper_grid", action="store_true", help="Route grid boundaries to the lower-noise block")
+    parser.add_argument(
+        "--invert_timestep_frequencies",
+        action="store_true",
+        help="Use the Llama-style ascending frequency bank for DiffusionBlocks",
+    )
     parser.add_argument("--dblock_plain_ce", action="store_true", help="Use unweighted cross-entropy for DiffusionBlocks")
     parser.add_argument("--gamma", type=float, default=0.05)
     parser.add_argument("--num_inference_steps", type=int, default=None)

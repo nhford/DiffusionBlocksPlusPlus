@@ -162,9 +162,21 @@ class ViTDBlockModel(ViTModel):
             missing_keys, unexpected_keys, error_msgs,
         )
 
+    def on_load_checkpoint(self, checkpoint):
+        saved_inversion = checkpoint.get("hyper_parameters", {}).get(
+            "invert_timestep_frequencies", False
+        )
+        if saved_inversion != getattr(self.args, "invert_timestep_frequencies", False):
+            raise ValueError(
+                "Match --invert_timestep_frequencies to the checkpoint's training recipe."
+            )
+
     def configure_model(self):
         self.model = load_vit(
-            image_size=self.image_size, num_labels=self.num_labels, is_dblock=True
+            image_size=self.image_size,
+            num_labels=self.num_labels,
+            is_dblock=True,
+            invert_timestep_frequencies=getattr(self.args, "invert_timestep_frequencies", False),
         )
         print(self.model)
 
