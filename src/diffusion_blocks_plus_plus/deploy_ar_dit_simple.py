@@ -236,9 +236,10 @@ def evaluate_model(
             noisy_logits = get_logits(noisy_embeddings, timestep)
             expected = model.embed_output_logits(noisy_logits)
             # Our model is that the Gaussians scale at x=e^t, so the time derivative dx/dt is x=e^t.
-            return noisy_embeddings - expected
+            return (noisy_embeddings - expected) / math.exp(timestep)
 
         noise_levels = noise_schedule.get_discrete_stdevs(EVAL_NUM_STEPS)
+        noise_levels = torch.linspace(80, 0.002, EVAL_NUM_STEPS)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
         denoise_progress = tqdm(
@@ -248,7 +249,7 @@ def evaluate_model(
         )
         for stdev, next_stdev in denoise_progress:
             # TODO: Implement alternative samplers
-            dt = math.log(next_stdev) - math.log(stdev)
+            dt = next_stdev - stdev
             noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
             noisy_rmsnorm = math.sqrt((noisy_embeddings**2).mean().item())
             expected_rmsnorm = math.sqrt(next_stdev**2 + 1)
