@@ -26,16 +26,15 @@ from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
 from .llama.vram_tracker import MemoryTracker
 
-SEQUENCE_LENGTH = 128  # TODO: 256 is prod
-BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
-LEARNING_RATE = 0.001
-EMBED_TIMESTEPS = False
+SEQUENCE_LENGTH = 256  # TODO: 256 is prod
+BATCH_SIZE = 32  # TODO: Should be 256 as in original paper
+LEARNING_RATE = 3e-5
+EMBED_TIMESTEPS = True
 EVAL_NUM_STEPS = 10
 NUM_EPOCHS = 1
 
-DEBUG_LEARN_NOISE = True
-DEBUG_DATASET_CAP = 100
-DEBUG_FORCE_COND = False
+DEBUG_LEARN_NOISE = False
+DEBUG_DATASET_CAP = 10000
 DEBUG_LOG_VRAM = True
 
 
@@ -348,7 +347,7 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
     test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
-    noise_schedule = NoiseLevelDistribution()
+    noise_schedule = NoiseLevelDistribution(gamma=0.1)
 
     # See Appendix E.4 in the Sakana.ai paper
     config = LlamaDiTConfig(
