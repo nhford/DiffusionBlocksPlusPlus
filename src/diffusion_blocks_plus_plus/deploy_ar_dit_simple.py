@@ -241,14 +241,25 @@ def evaluate_model(
         noise_levels = noise_schedule.get_discrete_stdevs(EVAL_NUM_STEPS)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
-        for stdev, next_stdev in tqdm(
+        denoise_progress = tqdm(
             list(itertools.pairwise(noise_levels)),
             desc="Denoise Step",
             leave=False,
-        ):
+        )
+        for stdev, next_stdev in denoise_progress:
             # TODO: Implement alternative samplers
             dt = math.log(next_stdev) - math.log(stdev)
             noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
+            noisy_rmsnorm = math.sqrt((noisy_embeddings**2).mean().item())
+            expected_rmsnorm = math.sqrt(next_stdev**2 + 1)
+            denoise_progress.set_postfix(
+                {
+                    "stdev": stdev,
+                    "next_stdev": next_stdev,
+                    "noisy_rmsnorm": noisy_rmsnorm,
+                    "expected_rmsnorm": expected_rmsnorm,
+                }
+            )
         t_final = math.log(noise_levels[-1])
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
         assert predictions.shape == (batch_size, SEQUENCE_LENGTH)
