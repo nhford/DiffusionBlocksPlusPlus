@@ -274,16 +274,16 @@ if __name__ == "__main__":
         raise ValueError("Must choose train or evaluate")
     action = args.action
 
-    timestamp = datetime.now().isoformat()
-    checkpoint_save_path = f"./checkpoints/ckpt-{timestamp}"
+    default_output_path = Path.cwd() / "outputs" / f"run-{datetime.now().isoformat()}"
+    checkpoint_save_path = default_output_path / "checkpoint"
     if args.to_ckpt is not None:
-        checkpoint_save_path = args.to_ckpt
+        checkpoint_save_path = Path(args.to_ckpt)
 
     checkpoint_load_path = args.from_ckpt
 
-    metrics_save_path = f"./data/{timestamp}.csv"
+    metrics_save_path = default_output_path / "metrics.csv"
     if args.log_path is not None:
-        metrics_save_path = args.log_path
+        metrics_save_path = Path(args.log_path)
 
     if action == "evaluate" and checkpoint_load_path is None:
         raise ValueError("Must provide model for evaluation")

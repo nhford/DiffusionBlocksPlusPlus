@@ -800,14 +800,14 @@ class LlamaDiTForCausalLM:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def save_checkpoint(self, path: str):
+    def save_checkpoint(self, path: str | os.PathLike):
         for i in range(self.num_blocks):
             self.save_block(i)
         embedding_path = Path(self.save_path.name) / "input_embedding.pth"
         torch.save(self.input_embedding.state_dict(), embedding_path)
         shutil.copytree(self.save_path.name, path)
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(self, path: str | os.PathLike):
         for i in range(self.num_blocks):
             self.unload_block(i)
         shutil.copytree(path, self.save_path.name, dirs_exist_ok=True)
