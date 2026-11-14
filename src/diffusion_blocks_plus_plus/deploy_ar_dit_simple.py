@@ -215,6 +215,9 @@ def evaluate_model(
                     (noisy_embeddings.shape[0],), timestep
                 )
 
+            # Normalize inputs
+            noisy_embeddings = noisy_embeddings / math.sqrt(math.exp(timestep) ** 2 + 1)
+
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
             outputs: CausalLMOutputWithPast = current_block(
