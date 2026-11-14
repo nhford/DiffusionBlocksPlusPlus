@@ -24,6 +24,7 @@
 import gc
 import math
 import os
+from pathlib import Path
 import shutil
 import tempfile
 from typing import Optional, Tuple, Union, Unpack
@@ -37,15 +38,19 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (BaseModelOutputWithPast,
-                                           CausalLMOutputWithPast)
-from transformers.models.llama.modeling_llama import (KwargsForCausalLM,
-                                                      LlamaAttention, LlamaMLP,
-                                                      LlamaRMSNorm,
-                                                      LlamaRotaryEmbedding)
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
+from transformers.models.llama.modeling_llama import (
+    KwargsForCausalLM,
+    LlamaAttention,
+    LlamaMLP,
+    LlamaRMSNorm,
+    LlamaRotaryEmbedding,
+)
 
-from diffusion_blocks_plus_plus.llama.noise_level_manager import \
-    NoiseLevelDistribution
+from .noise_level_manager import NoiseLevelDistribution
 
 DEFAULT_SCHEDULE = NoiseLevelDistribution()
 
@@ -746,28 +751,22 @@ class LlamaDiTForCausalLM:
     Note that because this module does weird things with weight offloading, this is not a PyTorch module.
     """
 
-    def __init__(self, config: LlamaDiTConfig, save_path: str | None = None):
+    def __init__(self, config: LlamaDiTConfig):
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.padding_idx = config.pad_token_id
         self.num_blocks = config.num_blocks
         self.rms_norm_eps = config.rms_norm_eps
-        if save_path is None:
-            self.save_path = tempfile.mkdtemp(prefix="llama_dit_for_causal_lm")
-        else:
-            self.save_path = save_path
+        self.save_path = tempfile.TemporaryDirectory(prefix="llama_dit_for_causal_lm_")
         self.block_boundaries = [*config.block_boundaries]
 
         # Embedding is always loaded in memory
-        embedding_path = f"{self.save_path}/input_embedding.pth"
         self.input_embedding = nn.Embedding(
             self.vocab_size, self.hidden_size, self.padding_idx
         )
-        if os.path.exists(embedding_path):
-            self.input_embedding.load_state_dict(torch.load(embedding_path))
 
         for block_idx in range(self.num_blocks):
-            block_path = f"{self.save_path}/{block_idx}"
+            block_path = Path(self.save_path.name) / str(block_idx)
             if not os.path.isdir(block_path):
                 block = LlamaDiTBlockForCausalLM(config)
                 block.save_pretrained(block_path)
@@ -779,21 +778,17 @@ class LlamaDiTForCausalLM:
         ] * self.num_blocks
 
     def load_block(self, block_idx: int):
-        block_path = f"{self.save_path}/{block_idx}"
+        block_path = Path(self.save_path.name) / str(block_idx)
         if self.blocks_loaded[block_idx] is None:
             self.blocks_loaded[block_idx] = LlamaDiTBlockForCausalLM.from_pretrained(
                 block_path
             )
 
     def save_block(self, block_idx: int):
-        block_path = f"{self.save_path}/{block_idx}"
+        block_path = Path(self.save_path.name) / str(block_idx)
         current_block = self.blocks_loaded[block_idx]
         if current_block is not None:
             current_block.save_pretrained(block_path)
-
-    def save_embedding(self):
-        embedding_path = f"{self.save_path}/input_embedding.pth"
-        torch.save(self.input_embedding.state_dict, embedding_path)
 
     def unload_block(self, block_idx: int):
         self.save_block(block_idx)
@@ -803,13 +798,21 @@ class LlamaDiTForCausalLM:
             del current_block
         self.blocks_loaded[block_idx] = None
         gc.collect()
-        torch.cuda.empty_cache
+        torch.cuda.empty_cache()
 
-    def save_checkpoint(self, path: str):
+    def save_checkpoint(self, path: str | os.PathLike):
         for i in range(self.num_blocks):
             self.save_block(i)
-        self.save_embedding()
-        shutil.copytree(self.save_path, path)
+        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
+        torch.save(self.input_embedding.state_dict(), embedding_path)
+        shutil.copytree(self.save_path.name, path)
+
+    def load_checkpoint(self, path: str | os.PathLike):
+        for i in range(self.num_blocks):
+            self.unload_block(i)
+        shutil.copytree(path, self.save_path.name, dirs_exist_ok=True)
+        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
+        self.input_embedding.load_state_dict(torch.load(embedding_path))
 
     def to_device(self, device):
         for i in range(self.num_blocks):

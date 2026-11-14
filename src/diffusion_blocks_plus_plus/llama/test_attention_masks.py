@@ -1,8 +1,7 @@
 import pytest
 import torch
 
-from .attention_masks import (build_diffusion_attention_mask,
-                              build_train_attention_mask)
+from .attention_masks import build_diffusion_attention_mask, build_train_attention_mask
 
 I = float("-inf")
 

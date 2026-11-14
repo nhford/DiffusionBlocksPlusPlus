@@ -1,6 +1,8 @@
+import argparse
+import itertools
 import math
-import os
 from datetime import datetime
+from pathlib import Path
 
 import pandas
 import torch
@@ -12,20 +14,17 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from diffusion_blocks_plus_plus.llama.attention_masks import (
+from .llama.attention_masks import (
     build_train_attention_mask,
     mask_to_pos,
 )
-from diffusion_blocks_plus_plus.llama.data import (
+from .llama.data import (
     predictable_dataset,
     prepare_training_batch,
-    trivial_random_dataset,
 )
-from diffusion_blocks_plus_plus.llama.noise_level_manager import NoiseLevelDistribution
-from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
-
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
-from .plot_data import generate_plot
+from .llama.noise_level_manager import NoiseLevelDistribution
+from .llama.vram_tracker import MemoryTracker
 
 SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
@@ -73,11 +72,11 @@ def train_block(
 
         token_ids = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor)
-        assert token_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+        # assert token_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
 
         masked_positions = batch["attention_mask"].to(device)
         assert isinstance(masked_positions, torch.Tensor)
-        assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+        # assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
 
         features, position_ids, sigmas, attention, labels, labels_mask = (
             prepare_training_batch(
@@ -94,14 +93,14 @@ def train_block(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **(dict(timestep=sigmas.log()) if EMBED_TIMESTEPS else {}),
+            **({"timestep": sigmas.log()} if EMBED_TIMESTEPS else {}),
         )
 
         memory_tracker.measure_mem_act()
 
         logits = outputs.logits
         assert isinstance(logits, torch.Tensor)
-        assert logits.shape == (BATCH_SIZE, SEQUENCE_LENGTH * 2, config.vocab_size)
+        # assert logits.shape == (BATCH_SIZE, SEQUENCE_LENGTH * 2, config.vocab_size)
 
         loss = F.cross_entropy(logits.permute(0, 2, 1), labels, reduction="none")
         loss = (loss * labels_mask).sum() / labels_mask.sum()
@@ -127,22 +126,21 @@ def train_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
-):
-    print(f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
+) -> list[dict]:
+    print(
+        f"Training model on {len(dataloader.dataset)} samples for {NUM_EPOCHS} epochs."  # type: ignore[reportArgumentType]
+    )
+
+    results = []
 
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
-            results = train_block(model, block_idx, dataloader, device, noise_schedule)
+            block_results = train_block(
+                model, block_idx, dataloader, device, noise_schedule
+            )
+            results += [{"block_idx": block_idx, **row} for row in block_results]
 
-            name = datetime.now().isoformat() + "_block_" + str(block_idx)
-            os.makedirs("./data", exist_ok=True)
-            results = pandas.DataFrame(results)
-            results.to_csv(f"./data/{name}.csv")
-
-            generate_plot(name)
-
-    name = datetime.now().isoformat()
-    model.save_checkpoint(f"./checkpoints/{name}")
+    return results
 
 
 @torch.no_grad
@@ -154,6 +152,7 @@ def evaluate_model(
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
 
+    model.input_embedding.to(device)
     # We know the dataset has a length
     print(f"Evaluating model on {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
 
@@ -162,13 +161,16 @@ def evaluate_model(
 
     progress = tqdm(dataloader, desc="Batch")
     for batch_idx, batch in enumerate(progress):
+        # batches may be smaller than BATCH_SIZE
+        batch_size = batch["input_ids"].shape[0]
+
         token_ids = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor)
-        assert token_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+        assert token_ids.shape == (batch_size, SEQUENCE_LENGTH + 1)
 
         masked_positions = batch["attention_mask"].to(device)
         assert isinstance(masked_positions, torch.Tensor)
-        assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+        assert masked_positions.shape == (batch_size, SEQUENCE_LENGTH + 1)
 
         # Add 1 to the per-channel variance due to the embedding variance.
         initial_variance = model.block_boundaries[-1] ** 2 + 1
@@ -176,14 +178,14 @@ def evaluate_model(
 
         clean_embeddings = model.embed_input_ids(token_ids[:, :-1])
         assert clean_embeddings.shape == (
-            BATCH_SIZE,
+            batch_size,
             SEQUENCE_LENGTH,
             clean_embeddings.shape[2],
         )
 
         attention_mask = build_train_attention_mask(masked_positions)
         assert attention_mask.shape == (
-            BATCH_SIZE,
+            batch_size,
             1,
             SEQUENCE_LENGTH * 2,
             SEQUENCE_LENGTH * 2,
@@ -191,7 +193,7 @@ def evaluate_model(
 
         position_ids = mask_to_pos(masked_positions)
         position_ids = torch.cat([position_ids[:, :-1], position_ids[:, 1:]], dim=1)
-        assert position_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH * 2)
+        assert position_ids.shape == (batch_size, SEQUENCE_LENGTH * 2)
 
         def get_logits(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
             """Get the logit predictions for an embedding's denoised embedding."""
@@ -203,14 +205,14 @@ def evaluate_model(
             model.load_block(current_block_idx)
             current_block = model.blocks_loaded[current_block_idx]
             assert current_block is not None
-            current_block.to(device)
+            current_block.to(device)  # type: ignore https://github.com/huggingface/transformers/issues/38052
             current_block.eval()
             model.input_embedding.eval()
 
             timestep_embedding_kwarg = {}
             if EMBED_TIMESTEPS:
                 timestep_embedding_kwarg["timestep"] = torch.full(
-                    (BATCH_SIZE,), timestep
+                    (noisy_embeddings.shape[0],), timestep
                 )
 
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
@@ -237,7 +239,7 @@ def evaluate_model(
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
         for stdev, next_stdev in tqdm(
-            list(zip(noise_levels[:-1], noise_levels[1:])),
+            list(itertools.pairwise(noise_levels)),
             desc="Denoise Step",
             leave=False,
         ):
@@ -246,7 +248,8 @@ def evaluate_model(
             noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
         t_final = math.log(noise_levels[-1])
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
-        assert predictions.shape == (BATCH_SIZE, SEQUENCE_LENGTH)
+        assert predictions.shape == (batch_size, SEQUENCE_LENGTH)
+
         correct = predictions == token_ids[:, 1:]
         prediction_targets = masked_positions[:, 1:] & masked_positions[:, :-1]
         correct = correct & prediction_targets
@@ -258,6 +261,35 @@ def evaluate_model(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(prog="deploy_ar_dit_simple.py")
+
+    parser.add_argument("action")
+    parser.add_argument("-i", "--from-ckpt")
+    parser.add_argument("-o", "--to-ckpt")
+    parser.add_argument("-l", "--log-path")
+
+    args = parser.parse_args()
+
+    if args.action not in ["train", "evaluate"]:
+        raise ValueError("Must choose train or evaluate")
+    action = args.action
+
+    default_output_path = (
+        Path.cwd() / "outputs" / f"run-{datetime.now():%Y-%m-%d_%H-%M-%S}"
+    )
+    checkpoint_save_path = default_output_path / "checkpoint"
+    if args.to_ckpt is not None:
+        checkpoint_save_path = Path(args.to_ckpt)
+
+    checkpoint_load_path = args.from_ckpt
+
+    metrics_save_path = default_output_path / "metrics.csv"
+    if args.log_path is not None:
+        metrics_save_path = Path(args.log_path)
+
+    if action == "evaluate" and checkpoint_load_path is None:
+        raise ValueError("Must provide model for evaluation")
+
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
     assert isinstance(tokenizer, LlamaTokenizerFast)
     # This is because the attention mask must not attend to padding tokens.
@@ -285,9 +317,9 @@ if __name__ == "__main__":
             tokenize_function, batched=True, remove_columns=["text"]
         )
         test_split = (
-            "valid"
+            "validation"
             if DEBUG_DATASET_CAP is None
-            else f"valid[:{DEBUG_DATASET_CAP // 10}]"
+            else f"validation[:{DEBUG_DATASET_CAP // 10}]"
         )
         test_dataset = load_dataset("roneneldan/TinyStories", split=test_split)
         test_dataset = test_dataset.map(
@@ -315,10 +347,19 @@ if __name__ == "__main__":
         block_boundaries=noise_schedule.get_block_stdevs(4),
     )
 
-    model = LlamaDiTForCausalLM(config)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_model(model, train_dataloader, device, noise_schedule)
+    model = LlamaDiTForCausalLM(config)
+    if checkpoint_load_path is not None:
+        model.load_checkpoint(checkpoint_load_path)
 
-    evaluate_model(model, test_dataloader, device, noise_schedule)
+    if action == "train":
+        results_dict = train_model(model, train_dataloader, device, noise_schedule)
+
+        model.save_checkpoint(checkpoint_save_path)
+
+        Path(metrics_save_path).parent.mkdir(parents=True, exist_ok=True)
+        pandas.DataFrame(results_dict).to_csv(metrics_save_path)
+
+    if action == "evaluate":
+        evaluate_model(model, test_dataloader, device, noise_schedule)
