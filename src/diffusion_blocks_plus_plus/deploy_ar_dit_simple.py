@@ -1,7 +1,6 @@
 import argparse
 import itertools
 import math
-import os
 from datetime import datetime
 
 import pandas
@@ -14,19 +13,17 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from diffusion_blocks_plus_plus.llama.attention_masks import (
+from .llama.attention_masks import (
     build_train_attention_mask,
     mask_to_pos,
 )
-from diffusion_blocks_plus_plus.llama.data import (
+from .llama.data import (
     predictable_dataset,
     prepare_training_batch,
-    trivial_random_dataset,
 )
-from diffusion_blocks_plus_plus.llama.noise_level_manager import NoiseLevelDistribution
-from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
-
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
+from .llama.noise_level_manager import NoiseLevelDistribution
+from .llama.vram_tracker import MemoryTracker
 
 SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
