@@ -1,11 +1,10 @@
 import os
 from functools import partial
 
+import lightning as L
+from datasets import DatasetDict, load_dataset
 from torch.utils.data import DataLoader
 from torchvision import transforms as T
-import lightning as L
-from datasets import load_dataset, DatasetDict
-
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 

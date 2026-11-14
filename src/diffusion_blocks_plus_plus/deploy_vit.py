@@ -1,11 +1,12 @@
-import os
 import argparse
 import datetime
 import json
-import torch
+import os
+
 import lightning as L
+import torch
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.strategies import DDPStrategy, DeepSpeedStrategy
 
 from .vit.data import load_data
@@ -78,9 +79,7 @@ def main(args):
             trainer.test(model, data.test_dataloader(), ckpt_path="best")
     else:
         assert args.ckpt_path is not None
-        model.test_kwargs = (
-            {"ode": args.ode} if args.model_type == "dblock" else {}
-        )
+        model.test_kwargs = {"ode": args.ode} if args.model_type == "dblock" else {}
         trainer.test(model, data, ckpt_path=args.ckpt_path)
 
 
