@@ -26,7 +26,6 @@ from diffusion_blocks_plus_plus.llama.noise_level_manager import NoiseLevelDistr
 from diffusion_blocks_plus_plus.llama.vram_tracker import MemoryTracker
 
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
-from .plot_data import generate_plot
 
 SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
@@ -129,7 +128,9 @@ def train_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
 ) -> list[dict]:
-    print(f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
+    print(
+        f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples."  # type: ignore[reportArgumentType]
+    )
 
     results = []
 
@@ -202,7 +203,7 @@ def evaluate_model(
             model.load_block(current_block_idx)
             current_block = model.blocks_loaded[current_block_idx]
             assert current_block is not None
-            current_block.to(device)
+            current_block.to(device)  # type: ignore https://github.com/huggingface/transformers/issues/38052
             current_block.eval()
             model.input_embedding.eval()
 
@@ -258,15 +259,13 @@ def evaluate_model(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="ProgramName",
-        description="What the program does",
-        epilog="Text at the bottom of help",
+        prog="DiffusionBlockPlusPlus Llama",
     )
 
     parser.add_argument("action")
-    parser.add_argument("--from-ckpt")
-    parser.add_argument("-c", "--to-ckpt")
-    parser.add_argument("-d", "--data-path")
+    parser.add_argument("-i", "--from-ckpt")
+    parser.add_argument("-o", "--to-ckpt")
+    parser.add_argument("-l", "--log-path")
 
     args = parser.parse_args()
 
@@ -282,8 +281,11 @@ if __name__ == "__main__":
     checkpoint_load_path = args.from_ckpt
 
     metrics_save_path = f"./data/{timestamp}.csv"
-    if args.data_path is not None:
-        metrics_save_path = args.data_path
+    if args.log_path is not None:
+        metrics_save_path = args.log_path
+
+    if action == "evaluate" and checkpoint_load_path is None:
+        raise ValueError("Must provide model for evaluation")
 
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
     assert isinstance(tokenizer, LlamaTokenizerFast)
