@@ -109,6 +109,20 @@ uv run main.py test cifar100 --model_type dblock \
     --ckpt_path "$CKPT_PATH" --num_blocks 3 --num_inference_steps 12
 ```
 
+## Development
+
+**Formatting and Linting**
+To format the code, run
+```sh
+uv run ruff format
+```
+
+**Testing**
+To test the code, run
+```sh
+uv run pytest -v
+```
+
 ## Acknowledgement
 
 The implementation of Vision Transformer in [vit.py](./vit.py) is based on [HuggingFace Transformers](https://github.com/huggingface/transformers). And, the implementation of EDM is based on [Stability-AI/generative-models](https://github.com/Stability-AI/generative-models).  

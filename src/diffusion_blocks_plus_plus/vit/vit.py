@@ -14,33 +14,33 @@
 # limitations under the License.
 """PyTorch ViT model."""
 
+import math
+from dataclasses import dataclass
+
 # copied from https://github.com/huggingface/transformers/blob/v4.52.4/src/transformers/models/vit/modeling_vit.py
 from typing import Dict, List, Optional, Tuple, Union
-from dataclasses import dataclass
-import math
-import torch
-from torch import nn
-import torch.nn.functional as F
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
+import torch
+import torch.nn.functional as F
+from torch import nn
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from transformers import ViTConfig as OrgViTConfig
 from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPooling,
     ImageClassifierOutput,
 )
 from transformers.modeling_utils import PreTrainedModel
-from transformers.utils import logging, torch_int
-from transformers import ViTConfig as OrgViTConfig
+from transformers.models.vit.modeling_vit import ViTAttention
 from transformers.models.vit.modeling_vit import (
     ViTForImageClassification as OrgViTForImageClassification,
 )
 from transformers.models.vit.modeling_vit import (
-    ViTPatchEmbeddings,
-    ViTAttention,
     ViTIntermediate,
+    ViTPatchEmbeddings,
     ViTPooler,
 )
-
+from transformers.utils import logging, torch_int
 
 logger = logging.get_logger(__name__)
 
@@ -51,7 +51,9 @@ def modulate(x, shift, scale):
 
 
 class TimestepEmbedder(nn.Module):
-    def __init__(self, hidden_size, frequency_embedding_size=256, *, invert_frequencies=False):
+    def __init__(
+        self, hidden_size, frequency_embedding_size=256, *, invert_frequencies=False
+    ):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size),

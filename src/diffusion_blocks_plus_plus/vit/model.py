@@ -1,14 +1,15 @@
 import random
+
+import lightning as L
 import numpy as np
-from scipy.stats import norm
 import torch
 import torch.nn.functional as F
-import lightning as L
 import torchmetrics
+from scipy.stats import norm
 from transformers import get_scheduler
 
-from .vit import load_vit
 from .dblock_modules import get_block_sigmas, get_discrete_sigmas
+from .vit import load_vit
 
 
 def load_model(args):
@@ -111,7 +112,9 @@ class ViTModel(L.LightningModule):
         batch_size = batch["pixel_values"].shape[0]
         model_kwargs = self.get_model_kwargs(batch)
         combined_kwargs = {**model_kwargs, **self.test_kwargs}
-        res = self.shared_step(batch, step="test", return_metrics=True, **combined_kwargs)
+        res = self.shared_step(
+            batch, step="test", return_metrics=True, **combined_kwargs
+        )
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
         self.log("test/examples", float(batch_size), reduce_fx="sum", sync_dist=True)
 
@@ -151,15 +154,26 @@ class ViTDBlockModel(ViTModel):
         )
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict,
-        missing_keys, unexpected_keys, error_msgs,
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
     ):
         # Older checkpoints saved this derived schedule. Keep the schedule built
         # from the current inference settings, regardless of its saved length.
         state_dict.pop(prefix + "sigmas", None)
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict,
-            missing_keys, unexpected_keys, error_msgs,
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
         )
 
     def on_load_checkpoint(self, checkpoint):
@@ -176,7 +190,9 @@ class ViTDBlockModel(ViTModel):
             image_size=self.image_size,
             num_labels=self.num_labels,
             is_dblock=True,
-            invert_timestep_frequencies=getattr(self.args, "invert_timestep_frequencies", False),
+            invert_timestep_frequencies=getattr(
+                self.args, "invert_timestep_frequencies", False
+            ),
         )
         print(self.model)
 
@@ -232,7 +248,7 @@ class ViTDBlockModel(ViTModel):
         """
         Denoise a class embedding zt conditioned on image x.
 
-        This function produces logit predictions for 
+        This function produces logit predictions for
 
         Args:
             x (torch.Tensor): A (BxCxWxH) tensor containing batches of images
@@ -288,7 +304,7 @@ class ViTDBlockModel(ViTModel):
         ode = kwargs.get("ode", "euler")
 
         if return_metrics:
-            logits = self.diffusion_step(pixel_values,ode=ode)
+            logits = self.diffusion_step(pixel_values, ode=ode)
             if step == "val":
                 metrics = self.valid_metrics(logits, labels)
                 metrics["val/loss"] = F.cross_entropy(logits, labels)
@@ -322,13 +338,13 @@ class ViTDBlockModel(ViTModel):
         }
         return loss, loss_dict
 
-    def diffusion_step(self, x, ode='euler'):
+    def diffusion_step(self, x, ode="euler"):
         bsz = x.shape[0]
         hidden_size = self.model.config.hidden_size
         z = torch.randn(bsz, hidden_size, device=self.device)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([x.shape[0]])
-        
+
         # Match the unit-norm class embeddings used as clean training targets.
         class_embeddings = self.normalize_embeddings(
             self.model.get_input_embeddings().weight
@@ -354,15 +370,15 @@ class ViTDBlockModel(ViTModel):
             dt_euler = next_sigma - sigma
             euler_step = z + dt_euler[:, None] * d_euler
 
-            if ode == 'euler':
+            if ode == "euler":
                 z = euler_step
-            elif ode == 'heun':
+            elif ode == "heun":
                 # Explicit trapezoidal (Heun) method: evaluate the second slope
                 # at the full Euler predictor and the end of the interval.
                 d_heun = get_slope(euler_step, next_sigma, block_indices[i + 1])
                 z = z + dt_euler[:, None] * (d_euler + d_heun) / 2
 
-            elif ode == 'midpoint':
+            elif ode == "midpoint":
                 # Explicit midpoint method: evaluate the slope at the Euler
                 # prediction halfway through both the state and sigma interval.
                 average_sigma = (next_sigma + sigma) / 2
