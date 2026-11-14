@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import math
 import os
 from datetime import datetime
@@ -94,7 +95,7 @@ def train_block(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **(dict(timestep=sigmas.log()) if EMBED_TIMESTEPS else {}),
+            **({"timestep": sigmas.log()} if EMBED_TIMESTEPS else {}),
         )
 
         memory_tracker.measure_mem_act()
@@ -162,36 +163,39 @@ def evaluate_model(
 
     progress = tqdm(dataloader, desc="Batch")
     for batch_idx, batch in enumerate(progress):
+        # batches may be smaller than BATCH_SIZE
+        batch_size = batch["input_ids"].shape[0]
+
         token_ids = batch["input_ids"].to(device)
         assert isinstance(token_ids, torch.Tensor)
-        # assert token_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+        assert token_ids.shape == (batch_size, SEQUENCE_LENGTH + 1)
 
         masked_positions = batch["attention_mask"].to(device)
         assert isinstance(masked_positions, torch.Tensor)
-        # assert masked_positions.shape == (BATCH_SIZE, SEQUENCE_LENGTH + 1)
+        assert masked_positions.shape == (batch_size, SEQUENCE_LENGTH + 1)
 
         # Add 1 to the per-channel variance due to the embedding variance.
         initial_variance = model.block_boundaries[-1] ** 2 + 1
         initial_stdev = math.sqrt(initial_variance)
 
         clean_embeddings = model.embed_input_ids(token_ids[:, :-1])
-        # assert clean_embeddings.shape == (
-        #     BATCH_SIZE,
-        #     SEQUENCE_LENGTH,
-        #     clean_embeddings.shape[2],
-        # )
+        assert clean_embeddings.shape == (
+            batch_size,
+            SEQUENCE_LENGTH,
+            clean_embeddings.shape[2],
+        )
 
         attention_mask = build_train_attention_mask(masked_positions)
-        # assert attention_mask.shape == (
-        #     BATCH_SIZE,
-        #     1,
-        #     SEQUENCE_LENGTH * 2,
-        #     SEQUENCE_LENGTH * 2,
-        # )
+        assert attention_mask.shape == (
+            batch_size,
+            1,
+            SEQUENCE_LENGTH * 2,
+            SEQUENCE_LENGTH * 2,
+        )
 
         position_ids = mask_to_pos(masked_positions)
         position_ids = torch.cat([position_ids[:, :-1], position_ids[:, 1:]], dim=1)
-        # assert position_ids.shape == (BATCH_SIZE, SEQUENCE_LENGTH * 2)
+        assert position_ids.shape == (batch_size, SEQUENCE_LENGTH * 2)
 
         def get_logits(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
             """Get the logit predictions for an embedding's denoised embedding."""
@@ -237,7 +241,7 @@ def evaluate_model(
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
         for stdev, next_stdev in tqdm(
-            list(zip(noise_levels[:-1], noise_levels[1:])),
+            list(itertools.pairwise(noise_levels)),
             desc="Denoise Step",
             leave=False,
         ):
@@ -246,7 +250,8 @@ def evaluate_model(
             noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
         t_final = math.log(noise_levels[-1])
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
-        # assert predictions.shape == (BATCH_SIZE, SEQUENCE_LENGTH)
+        assert predictions.shape == (batch_size, SEQUENCE_LENGTH)
+
         correct = predictions == token_ids[:, 1:]
         prediction_targets = masked_positions[:, 1:] & masked_positions[:, :-1]
         correct = correct & prediction_targets
