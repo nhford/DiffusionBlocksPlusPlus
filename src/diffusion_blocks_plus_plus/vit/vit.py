@@ -51,7 +51,9 @@ def modulate(x, shift, scale):
 
 
 class TimestepEmbedder(nn.Module):
-    def __init__(self, hidden_size, frequency_embedding_size=256, *, invert_frequencies=False):
+    def __init__(
+        self, hidden_size, frequency_embedding_size=256, *, invert_frequencies=False
+    ):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size),

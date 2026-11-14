@@ -190,7 +190,9 @@ class ViTDBlockModel(ViTModel):
             image_size=self.image_size,
             num_labels=self.num_labels,
             is_dblock=True,
-            invert_timestep_frequencies=getattr(self.args, "invert_timestep_frequencies", False),
+            invert_timestep_frequencies=getattr(
+                self.args, "invert_timestep_frequencies", False
+            ),
         )
         print(self.model)
 
@@ -342,7 +344,7 @@ class ViTDBlockModel(ViTModel):
         z = torch.randn(bsz, hidden_size, device=self.device)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([x.shape[0]])
-        
+
         # Match the unit-norm class embeddings used as clean training targets.
         class_embeddings = self.normalize_embeddings(
             self.model.get_input_embeddings().weight
