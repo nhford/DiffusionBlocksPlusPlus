@@ -274,7 +274,9 @@ if __name__ == "__main__":
         raise ValueError("Must choose train or evaluate")
     action = args.action
 
-    default_output_path = Path.cwd() / "outputs" / f"run-{datetime.now().isoformat()}"
+    default_output_path = (
+        Path.cwd() / "outputs" / f"run-{datetime.now():%Y-%m-%d_%H-%M-%S}"
+    )
     checkpoint_save_path = default_output_path / "checkpoint"
     if args.to_ckpt is not None:
         checkpoint_save_path = Path(args.to_ckpt)
