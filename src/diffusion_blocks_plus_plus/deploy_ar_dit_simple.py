@@ -2,6 +2,7 @@ import argparse
 import itertools
 import math
 from datetime import datetime
+from pathlib import Path
 
 import pandas
 import torch
@@ -260,9 +261,7 @@ def evaluate_model(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="DiffusionBlockPlusPlus Llama",
-    )
+    parser = argparse.ArgumentParser(prog="deploy_ar_dit_simple.py")
 
     parser.add_argument("action")
     parser.add_argument("-i", "--from-ckpt")
@@ -356,6 +355,8 @@ if __name__ == "__main__":
         results_dict = train_model(model, train_dataloader, device, noise_schedule)
 
         model.save_checkpoint(checkpoint_save_path)
+
+        Path(metrics_save_path).parent.mkdir(parents=True, exist_ok=True)
         pandas.DataFrame(results_dict).to_csv(metrics_save_path)
 
     if action == "evaluate":
