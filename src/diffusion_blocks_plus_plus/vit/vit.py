@@ -51,7 +51,7 @@ def modulate(x, shift, scale):
 
 
 class TimestepEmbedder(nn.Module):
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+    def __init__(self, hidden_size, frequency_embedding_size=256, *, invert_frequencies=False):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size),
@@ -59,12 +59,16 @@ class TimestepEmbedder(nn.Module):
             nn.Linear(hidden_size, hidden_size),
         )
         self.frequency_embedding_size = frequency_embedding_size
+        self.invert_frequencies = invert_frequencies
 
     @staticmethod
-    def timestep_embedding(t, dim, max_period=10000):
+    def timestep_embedding(t, dim, max_period=10000, *, invert_frequencies=False):
         half = dim // 2
+        log_frequency_limit = math.log(max_period)
+        if not invert_frequencies:
+            log_frequency_limit = -log_frequency_limit
         freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half) / half
+            log_frequency_limit * torch.arange(start=0, end=half) / half
         ).to(t.device)
         args = t[:, None] * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -75,9 +79,9 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t):
-        t_freq = self.timestep_embedding(t, self.frequency_embedding_size).to(
-            dtype=next(self.parameters()).dtype
-        )
+        t_freq = self.timestep_embedding(
+            t, self.frequency_embedding_size, invert_frequencies=self.invert_frequencies
+        ).to(dtype=next(self.parameters()).dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -107,10 +111,12 @@ class ViTDiTConfig(ViTConfig):
         self,
         time_conditioning: bool = False,
         cond_hidden_size: int | None = None,
+        invert_timestep_frequencies: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.time_conditioning = time_conditioning
+        self.invert_timestep_frequencies = invert_timestep_frequencies
         if cond_hidden_size is None:
             self.cond_hidden_size = self.hidden_size // 6
         else:
@@ -531,7 +537,10 @@ class ViTDiTModel(ViTPreTrainedModel):
 
         self.embeddings = ViTDiTEmbeddings(config, use_mask_token=use_mask_token)
         if config.time_conditioning:
-            self.time_embedder = TimestepEmbedder(config.cond_hidden_size)
+            self.time_embedder = TimestepEmbedder(
+                config.cond_hidden_size,
+                invert_frequencies=config.invert_timestep_frequencies,
+            )
         self.encoder = ViTDiTEncoder(config)
 
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
