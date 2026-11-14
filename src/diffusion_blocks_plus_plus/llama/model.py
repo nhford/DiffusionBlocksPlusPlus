@@ -37,15 +37,19 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (BaseModelOutputWithPast,
-                                           CausalLMOutputWithPast)
-from transformers.models.llama.modeling_llama import (KwargsForCausalLM,
-                                                      LlamaAttention, LlamaMLP,
-                                                      LlamaRMSNorm,
-                                                      LlamaRotaryEmbedding)
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
+from transformers.models.llama.modeling_llama import (
+    KwargsForCausalLM,
+    LlamaAttention,
+    LlamaMLP,
+    LlamaRMSNorm,
+    LlamaRotaryEmbedding,
+)
 
-from diffusion_blocks_plus_plus.llama.noise_level_manager import \
-    NoiseLevelDistribution
+from .noise_level_manager import NoiseLevelDistribution
 
 DEFAULT_SCHEDULE = NoiseLevelDistribution()
 
