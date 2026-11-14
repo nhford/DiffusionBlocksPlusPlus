@@ -766,7 +766,7 @@ class LlamaDiTForCausalLM:
         )
 
         for block_idx in range(self.num_blocks):
-            block_path = f"{self.save_path}/{block_idx}"
+            block_path = Path(self.save_path.name) / str(block_idx)
             if not os.path.isdir(block_path):
                 block = LlamaDiTBlockForCausalLM(config)
                 block.save_pretrained(block_path)
