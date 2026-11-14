@@ -128,7 +128,7 @@ def train_model(
     noise_schedule: NoiseLevelDistribution,
 ) -> list[dict]:
     print(
-        f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples."  # type: ignore[reportArgumentType]
+        f"Training model on {len(dataloader.dataset)} samples for {NUM_EPOCHS} epochs."  # type: ignore[reportArgumentType]
     )
 
     results = []
