@@ -24,6 +24,7 @@
 import gc
 import math
 import os
+from pathlib import Path
 import shutil
 import tempfile
 from typing import Optional, Tuple, Union, Unpack
@@ -756,7 +757,7 @@ class LlamaDiTForCausalLM:
         self.padding_idx = config.pad_token_id
         self.num_blocks = config.num_blocks
         self.rms_norm_eps = config.rms_norm_eps
-        self.save_path = tempfile.mkdtemp(prefix="llama_dit_for_causal_lm")
+        self.save_path = tempfile.TemporaryDirectory(prefix="llama_dit_for_causal_lm_")
         self.block_boundaries = [*config.block_boundaries]
 
         # Embedding is always loaded in memory
@@ -777,14 +778,14 @@ class LlamaDiTForCausalLM:
         ] * self.num_blocks
 
     def load_block(self, block_idx: int):
-        block_path = f"{self.save_path}/{block_idx}"
+        block_path = Path(self.save_path.name) / str(block_idx)
         if self.blocks_loaded[block_idx] is None:
             self.blocks_loaded[block_idx] = LlamaDiTBlockForCausalLM.from_pretrained(
                 block_path
             )
 
     def save_block(self, block_idx: int):
-        block_path = f"{self.save_path}/{block_idx}"
+        block_path = Path(self.save_path.name) / str(block_idx)
         current_block = self.blocks_loaded[block_idx]
         if current_block is not None:
             current_block.save_pretrained(block_path)
@@ -797,20 +798,20 @@ class LlamaDiTForCausalLM:
             del current_block
         self.blocks_loaded[block_idx] = None
         gc.collect()
-        torch.cuda.empty_cache
+        torch.cuda.empty_cache()
 
     def save_checkpoint(self, path: str):
         for i in range(self.num_blocks):
             self.save_block(i)
-        embedding_path = f"{self.save_path}/input_embedding.pth"
+        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
         torch.save(self.input_embedding.state_dict(), embedding_path)
-        shutil.copytree(self.save_path, path)
+        shutil.copytree(self.save_path.name, path)
 
     def load_checkpoint(self, path: str):
         for i in range(self.num_blocks):
             self.unload_block(i)
-        shutil.copytree(path, self.save_path, dirs_exist_ok=True)
-        embedding_path = f"{self.save_path}/input_embedding.pth"
+        shutil.copytree(path, self.save_path.name, dirs_exist_ok=True)
+        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
         self.input_embedding.load_state_dict(torch.load(embedding_path))
 
     def to_device(self, device):
