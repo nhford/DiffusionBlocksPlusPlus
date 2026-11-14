@@ -223,5 +223,4 @@ figures
 checkpoints
 
 # Scratch Work
-*.md
-!README.md
+notes.md
