@@ -59,7 +59,7 @@ class AdaRMS(nn.Module):
     (https://arxiv.org/abs/2212.09748).
 
     This layer takes an embedding and a conditioning tensor, whose dimensions
-    must be breadcastable except for the last dimension, computes a bias and
+    must be broadcastable except for the last dimension, computes a bias and
     scale for each channel, and then applies RMSNorm on the embeddings using the
     computed bias and scale.
 
@@ -71,7 +71,7 @@ class AdaRMS(nn.Module):
 
     Shape:
         - Input (embeddings): (batch_size, sequence, features)
-        - Input (conditioning): (batch_size, cond_size)
+        - Input (conditioning): (batch_size, 1 or sequence, cond_size)
         - Output: (batch_size, sequence, features)
     """
 
@@ -88,6 +88,14 @@ class AdaRMS(nn.Module):
             self.linear = nn.Linear(cond_size, features, bias=hidden_bias)
 
     def forward(self, embeddings: torch.Tensor, conditioning: torch.Tensor):
+        if (
+            conditioning.ndim != 3
+            or conditioning.shape[0] != embeddings.shape[0]
+            or conditioning.shape[1] not in (1, embeddings.shape[1])
+        ):
+            raise ValueError(
+                "Conditioning must have shape (batch_size, 1 or sequence_length, cond_size)"
+            )
         rmsnorm_params: torch.Tensor = self.silu(self.linear(conditioning))
         if self.bias:
             scale, bias = rmsnorm_params.chunk(2, -1)
@@ -99,7 +107,7 @@ class AdaRMS(nn.Module):
 
         rms = ((embeddings * embeddings).mean(-1, keepdim=True) + self.eps).sqrt()
 
-        return embeddings / rms * scale[:, None, :] + bias[:, None, :]
+        return embeddings / rms * scale + bias
 
 
 class TimestepEmbedder(nn.Module):
@@ -107,9 +115,9 @@ class TimestepEmbedder(nn.Module):
     This module computes timestep embeddings by running a frequency embedding
     through a MLP.
 
-    This module takes a timestep in the range 0-1 for each batch (tensor of
-    shape [batch_size]), and returns a batch of embeddings
-    [batch_size, hidden_size].
+    Takes log-noise timesteps of shape [batch_size, sequence] and returns
+    embeddings of shape [batch_size, sequence, hidden_size]. Legacy
+    [batch_size] inputs are treated as [batch_size, 1].
     """
 
     def __init__(self, hidden_size, frequency_embedding_size=256):
@@ -123,6 +131,8 @@ class TimestepEmbedder(nn.Module):
 
     @staticmethod
     def timestep_embedding(t, dim, max_frequency=10000):
+        if t.ndim == 1:
+            t = t[:, None]
         # Note: We modify Sakana.ai's implementation of the code here to use a
         # large maximum frequency instead of a period.
         # This should make the timestep embedding more informative.
@@ -130,11 +140,11 @@ class TimestepEmbedder(nn.Module):
         freqs = torch.exp(
             math.log(max_frequency) * torch.arange(start=0, end=half) / half
         ).to(t.device)
-        args = t[:, None] * freqs[None]
+        args = t[..., None] * freqs
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
             embedding = torch.cat(
-                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
+                [embedding, torch.zeros_like(embedding[..., :1])], dim=-1
             )
         return embedding
 

@@ -1,3 +1,4 @@
+import argparse
 import math
 import os
 from datetime import datetime
@@ -30,7 +31,6 @@ from .plot_data import generate_plot
 SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
 LEARNING_RATE = 0.001
-EMBED_TIMESTEPS = False
 EVAL_NUM_STEPS = 10
 NUM_EPOCHS = 1
 
@@ -40,12 +40,29 @@ DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
 
 
+def build_timesteps(
+    inputs_embeds: torch.Tensor, timestep: torch.Tensor | float, mode: str
+) -> torch.Tensor:
+    """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
+    batch_size, sequence_length = inputs_embeds.shape[:2]
+    timesteps = torch.as_tensor(
+        timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
+    ).reshape(-1, 1).expand(batch_size, 1)
+    if mode == "uniform":
+        return timesteps
+    if mode == "per-token":
+        clean = inputs_embeds.new_zeros((batch_size, sequence_length // 2))
+        return torch.cat([clean, timesteps.expand_as(clean)], dim=1)
+    raise ValueError(f"Unknown timestep conditioning mode: {mode}")
+
+
 def train_block(
     model: LlamaDiTForCausalLM,
     block_idx: int,
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
 ):
     for i in range(model.num_blocks):
         model.unload_block(i)
@@ -94,7 +111,7 @@ def train_block(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **(dict(timestep=sigmas.log()) if EMBED_TIMESTEPS else {}),
+            timestep=build_timesteps(features, sigmas.log(), timestep_conditioning),
         )
 
         memory_tracker.measure_mem_act()
@@ -127,6 +144,7 @@ def train_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
 ):
     print(
         f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples."
@@ -134,7 +152,9 @@ def train_model(
 
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
-            results = train_block(model, block_idx, dataloader, device, noise_schedule)
+            results = train_block(
+                model, block_idx, dataloader, device, noise_schedule, timestep_conditioning
+            )
 
             name = datetime.now().isoformat() + "_block_" + str(block_idx)
             os.makedirs("./data", exist_ok=True)
@@ -153,6 +173,7 @@ def evaluate_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
 
@@ -209,19 +230,13 @@ def evaluate_model(
             current_block.eval()
             model.input_embedding.eval()
 
-            timestep_embedding_kwarg = {}
-            if EMBED_TIMESTEPS:
-                timestep_embedding_kwarg["timestep"] = torch.full(
-                    (BATCH_SIZE,), timestep
-                )
-
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
             outputs: CausalLMOutputWithPast = current_block(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                **timestep_embedding_kwarg,
+                timestep=build_timesteps(inputs_embeds, timestep, timestep_conditioning),
             )
 
             logits = outputs.logits
@@ -260,6 +275,15 @@ def evaluate_model(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--timestep-conditioning",
+        choices=["uniform", "per-token"],
+        default="uniform",
+        help="Share timesteps across tokens or use zero for clean tokens.",
+    )
+    args = parser.parse_args()
+
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
     assert isinstance(tokenizer, LlamaTokenizerFast)
     # This is because the attention mask must not attend to padding tokens.
@@ -313,7 +337,8 @@ if __name__ == "__main__":
         num_attention_heads=12,
         intermediate_size=3072,
         num_blocks=4,
-        use_timestep_embedding=EMBED_TIMESTEPS,
+        use_timestep_embedding=True,
+        timestep_conditioning=args.timestep_conditioning,
         block_boundaries=noise_schedule.get_block_stdevs(4),
     )
 
@@ -321,6 +346,8 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_model(model, train_dataloader, device, noise_schedule)
+    train_model(model, train_dataloader, device, noise_schedule, args.timestep_conditioning)
 
-    evaluate_model(model, test_dataloader, device, noise_schedule)
+    evaluate_model(
+        model, test_dataloader, device, noise_schedule, args.timestep_conditioning
+    )
