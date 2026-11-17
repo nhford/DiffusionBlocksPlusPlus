@@ -15,7 +15,6 @@ dependencies = [
     "hf-transfer>=0.1.9",
     "scipy>=1.16.2",
     "flash-attn==2.7.4.post1; sys_platform == 'linux'",
-    "isort>=9.0.2",
     "matplotlib>=3.11.2",
     "psutil>=7.2.2",
 ]
@@ -40,4 +39,5 @@ flash-attn = ["torch"]
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "ruff>=0.17.5",
 ]

@@ -1,6 +1,6 @@
 import numpy as np
-from scipy.stats import norm
 import torch
+from scipy.stats import norm
 
 
 def get_block_sigmas(

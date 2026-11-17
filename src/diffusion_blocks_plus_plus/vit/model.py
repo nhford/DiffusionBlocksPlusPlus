@@ -1,14 +1,15 @@
 import random
+
+import lightning as L
 import numpy as np
-from scipy.stats import norm
 import torch
 import torch.nn.functional as F
-import lightning as L
 import torchmetrics
+from scipy.stats import norm
 from transformers import get_scheduler
 
-from .vit import load_vit
 from .dblock_modules import get_block_sigmas, get_discrete_sigmas
+from .vit import load_vit
 
 
 def load_model(args):
@@ -38,6 +39,7 @@ class ViTModel(L.LightningModule):
             prefix="val/",
         )
         self.test_metrics = self.valid_metrics.clone(prefix="test/")
+        self.test_kwargs = {}
         self.save_hyperparameters(args)
 
     def configure_model(self):
@@ -52,11 +54,17 @@ class ViTModel(L.LightningModule):
             lr=self.args.lr,
             weight_decay=self.args.weight_decay,
         )
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup_steps = self.args.num_warmup_steps
+        warmup_epochs = getattr(self.args, "num_warmup_epochs", None)
+        if warmup_epochs is not None:
+            steps_per_epoch = total_steps // self.trainer.max_epochs
+            warmup_steps = warmup_epochs * steps_per_epoch
         scheduler = get_scheduler(
             name=self.args.scheduler_type,
             optimizer=optimizer,
-            num_warmup_steps=self.args.num_warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
             scheduler_specific_kwargs=self.args.scheduler_specific_kwargs,
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
@@ -70,9 +78,9 @@ class ViTModel(L.LightningModule):
         logits = self(pixel_values=pixel_values, **kwargs)
         if return_metrics:
             if step == "val":
-                return self.valid_metrics(
-                    logits.view(-1, self.num_labels), labels.view(-1)
-                )
+                metrics = self.valid_metrics(logits, labels)
+                metrics["val/loss"] = F.cross_entropy(logits, labels)
+                return metrics
             elif step == "test":
                 return self.test_metrics(
                     logits.view(-1, self.num_labels), labels.view(-1)
@@ -104,8 +112,11 @@ class ViTModel(L.LightningModule):
         batch_size = batch["pixel_values"].shape[0]
         model_kwargs = self.get_model_kwargs(batch)
         combined_kwargs = {**model_kwargs, **self.test_kwargs}
-        res = self.shared_step(batch, step="test", return_metrics=True, **combined_kwargs)
+        res = self.shared_step(
+            batch, step="test", return_metrics=True, **combined_kwargs
+        )
         self.log_dict(res, batch_size=batch_size, prog_bar=True)
+        self.log("test/examples", float(batch_size), reduce_fx="sum", sync_dist=True)
 
 
 class ViTDBlockModel(ViTModel):
@@ -142,24 +153,46 @@ class ViTDBlockModel(ViTModel):
             },
         )
 
-        # add diffusion step method
-        self.test_kwargs = {}
-
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict,
-        missing_keys, unexpected_keys, error_msgs,
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
     ):
         # Older checkpoints saved this derived schedule. Keep the schedule built
         # from the current inference settings, regardless of its saved length.
         state_dict.pop(prefix + "sigmas", None)
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict,
-            missing_keys, unexpected_keys, error_msgs,
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
         )
+
+    def on_load_checkpoint(self, checkpoint):
+        saved_inversion = checkpoint.get("hyper_parameters", {}).get(
+            "invert_timestep_frequencies", False
+        )
+        if saved_inversion != getattr(self.args, "invert_timestep_frequencies", False):
+            raise ValueError(
+                "Match --invert_timestep_frequencies to the checkpoint's training recipe."
+            )
 
     def configure_model(self):
         self.model = load_vit(
-            image_size=self.image_size, num_labels=self.num_labels, is_dblock=True
+            image_size=self.image_size,
+            num_labels=self.num_labels,
+            is_dblock=True,
+            invert_timestep_frequencies=getattr(
+                self.args, "invert_timestep_frequencies", False
+            ),
         )
         print(self.model)
 
@@ -178,9 +211,9 @@ class ViTDBlockModel(ViTModel):
         return self.normalize_embeddings(embeds)
 
     def get_sigmas(self, n_samples: int, p_mean: float = -1.2, p_std: float = 1.2):
-        block_idx = random.choices(range(self.args.num_blocks), k=1)[0]
-        sigma_min_block = self.block_sigmas[block_idx]
-        sigma_max_block = self.block_sigmas[block_idx + 1]
+        interval_idx = random.randrange(self.args.num_blocks)
+        sigma_min_block = self.block_sigmas[interval_idx]
+        sigma_max_block = self.block_sigmas[interval_idx + 1]
         # extend the range
         if self.gamma > 0.0:
             log_sigma_min = np.log(sigma_min_block)
@@ -197,7 +230,8 @@ class ViTDBlockModel(ViTModel):
         rand = np.random.uniform(cdf_min_block, cdf_max_block, n_samples)
         sigma = np.exp(p_mean + p_std * norm.ppf(rand))
         sigma = torch.from_numpy(sigma)
-        return sigma
+        block_idx = self.args.num_blocks - 1 - interval_idx
+        return sigma, block_idx
 
     def get_weights(self, sigmas):
         return (sigmas**2 + self.sigma_data**2) / (sigmas * self.sigma_data) ** 2
@@ -214,7 +248,7 @@ class ViTDBlockModel(ViTModel):
         """
         Denoise a class embedding zt conditioned on image x.
 
-        This function produces logit predictions for 
+        This function produces logit predictions for
 
         Args:
             x (torch.Tensor): A (BxCxWxH) tensor containing batches of images
@@ -270,11 +304,11 @@ class ViTDBlockModel(ViTModel):
         ode = kwargs.get("ode", "euler")
 
         if return_metrics:
-            logits = self.diffusion_step(pixel_values,ode=ode)
+            logits = self.diffusion_step(pixel_values, ode=ode)
             if step == "val":
-                return self.valid_metrics(
-                    logits.view(-1, self.num_labels), labels.view(-1)
-                )
+                metrics = self.valid_metrics(logits, labels)
+                metrics["val/loss"] = F.cross_entropy(logits, labels)
+                return metrics
             elif step == "test":
                 return self.test_metrics(
                     logits.view(-1, self.num_labels), labels.view(-1)
@@ -283,8 +317,7 @@ class ViTDBlockModel(ViTModel):
                 raise NotImplementedError(f"Step {step} is not supported")
 
         z = self.get_embeds(labels, is_input=True)
-        sigmas = self.get_sigmas(z.shape[0])
-        block_idx = self.estimate_target_layer(sigmas)
+        sigmas, block_idx = self.get_sigmas(z.shape[0])
         sigmas = sigmas.to(z)
         zt = z + sigmas[:, None] * torch.randn_like(z)
         logits = self.denoise(pixel_values, zt, sigmas, block_idx)
@@ -292,8 +325,10 @@ class ViTDBlockModel(ViTModel):
             logits.view(-1, self.num_labels), labels.view(-1), reduction="none"
         )
         ce_loss = loss.mean()
-        w = self.get_weights(sigmas)[:, None]
-        loss = (loss * w).mean()
+        if getattr(self.args, "dblock_plain_ce", False):
+            loss = ce_loss
+        else:
+            loss = (loss * self.get_weights(sigmas.float())).mean()
 
         loss_dict = {
             f"{step}/loss": loss,
@@ -303,35 +338,47 @@ class ViTDBlockModel(ViTModel):
         }
         return loss, loss_dict
 
-    def diffusion_step(self, x, ode='euler'):
+    def diffusion_step(self, x, ode="euler"):
         bsz = x.shape[0]
         hidden_size = self.model.config.hidden_size
         z = torch.randn(bsz, hidden_size, device=self.device)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([x.shape[0]])
 
-        def get_slope(state, sigma):
-            logits = self.denoise(x, state, sigma)
+        # Match the unit-norm class embeddings used as clean training targets.
+        class_embeddings = self.normalize_embeddings(
+            self.model.get_input_embeddings().weight
+        )
+
+        block_indices = [None] * len(self.sigmas)
+        if getattr(self.args, "dblock_paper_grid", False):
+            # On a descending grid, a boundary belongs to the interval below it.
+            boundaries = self.sigmas.new_tensor(self.block_sigmas[1:-1])
+            intervals = torch.bucketize(self.sigmas, boundaries, right=False)
+            block_indices = (self.args.num_blocks - 1 - intervals).tolist()
+
+        def get_slope(state, sigma, block_idx=None):
+            logits = self.denoise(x, state, sigma, block_idx)
             probs = F.softmax(logits, dim=1)
-            denoised = F.linear(probs, self.model.get_input_embeddings().weight.t())
+            denoised = F.linear(probs, class_embeddings.t())
             return (state - denoised) / sigma[:, None]
 
         for i in range(self.sigmas.shape[0] - 1):
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
-            d_euler = get_slope(z, sigma)
+            d_euler = get_slope(z, sigma, block_indices[i])
             dt_euler = next_sigma - sigma
             euler_step = z + dt_euler[:, None] * d_euler
 
-            if ode == 'euler':
+            if ode == "euler":
                 z = euler_step
-            elif ode == 'heun':
+            elif ode == "heun":
                 # Explicit trapezoidal (Heun) method: evaluate the second slope
                 # at the full Euler predictor and the end of the interval.
-                d_heun = get_slope(euler_step, next_sigma)
+                d_heun = get_slope(euler_step, next_sigma, block_indices[i + 1])
                 z = z + dt_euler[:, None] * (d_euler + d_heun) / 2
 
-            elif ode == 'midpoint':
+            elif ode == "midpoint":
                 # Explicit midpoint method: evaluate the slope at the Euler
                 # prediction halfway through both the state and sigma interval.
                 average_sigma = (next_sigma + sigma) / 2
@@ -341,5 +388,5 @@ class ViTDBlockModel(ViTModel):
 
         min_sigma = self.sigmas[-1].item()
         sigmas = torch.full((x.shape[0],), min_sigma, device=self.device)
-        logits = self.denoise(x, z, sigmas)
+        logits = self.denoise(x, z, sigmas, block_indices[-1])
         return logits
