@@ -26,16 +26,15 @@ from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
 from .llama.vram_tracker import MemoryTracker
 
-SEQUENCE_LENGTH = 128  # TODO: 256 is prod
-BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
-LEARNING_RATE = 0.001
-EMBED_TIMESTEPS = False
+SEQUENCE_LENGTH = 256  # TODO: 256 is prod
+BATCH_SIZE = 32  # TODO: Should be 256 as in original paper
+LEARNING_RATE = 3e-5
+EMBED_TIMESTEPS = True
 EVAL_NUM_STEPS = 10
-NUM_EPOCHS = 1
+NUM_EPOCHS = 10
 
-DEBUG_LEARN_NOISE = True
-DEBUG_DATASET_CAP = 100
-DEBUG_FORCE_COND = False
+DEBUG_LEARN_NOISE = False
+DEBUG_DATASET_CAP = 10000
 DEBUG_LOG_VRAM = True
 
 
@@ -215,6 +214,9 @@ def evaluate_model(
                     (noisy_embeddings.shape[0],), timestep
                 )
 
+            # Normalize inputs
+            noisy_embeddings = noisy_embeddings / math.sqrt(math.exp(timestep) ** 2 + 1)
+
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
             outputs: CausalLMOutputWithPast = current_block(
@@ -233,19 +235,31 @@ def evaluate_model(
             noisy_logits = get_logits(noisy_embeddings, timestep)
             expected = model.embed_output_logits(noisy_logits)
             # Our model is that the Gaussians scale at x=e^t, so the time derivative dx/dt is x=e^t.
-            return noisy_embeddings - expected
+            return (noisy_embeddings - expected) / math.exp(timestep)
 
         noise_levels = noise_schedule.get_discrete_stdevs(EVAL_NUM_STEPS)
+        noise_levels = torch.linspace(80, 0.002, EVAL_NUM_STEPS)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
-        for stdev, next_stdev in tqdm(
+        denoise_progress = tqdm(
             list(itertools.pairwise(noise_levels)),
             desc="Denoise Step",
             leave=False,
-        ):
+        )
+        for stdev, next_stdev in denoise_progress:
             # TODO: Implement alternative samplers
-            dt = math.log(next_stdev) - math.log(stdev)
+            dt = next_stdev - stdev
             noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
+            noisy_rmsnorm = math.sqrt((noisy_embeddings**2).mean().item())
+            expected_rmsnorm = math.sqrt(next_stdev**2 + 1)
+            denoise_progress.set_postfix(
+                {
+                    "stdev": stdev,
+                    "next_stdev": next_stdev,
+                    "noisy_rmsnorm": noisy_rmsnorm,
+                    "expected_rmsnorm": expected_rmsnorm,
+                }
+            )
         t_final = math.log(noise_levels[-1])
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
         assert predictions.shape == (batch_size, SEQUENCE_LENGTH)
@@ -333,7 +347,7 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
     test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)  # type: ignore The dataset is simple enough to be compatible
 
-    noise_schedule = NoiseLevelDistribution()
+    noise_schedule = NoiseLevelDistribution(gamma=0.1)
 
     # See Appendix E.4 in the Sakana.ai paper
     config = LlamaDiTConfig(
