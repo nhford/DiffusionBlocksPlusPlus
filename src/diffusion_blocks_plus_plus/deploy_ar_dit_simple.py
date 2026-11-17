@@ -128,7 +128,9 @@ def train_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
 ):
-    print(f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
+    print(
+        f"Training model for {NUM_EPOCHS} epochs and {len(dataloader.dataset)} samples."
+    )  # type: ignore[reportArgumentType]
 
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):

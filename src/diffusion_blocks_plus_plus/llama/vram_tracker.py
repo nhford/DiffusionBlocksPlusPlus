@@ -10,13 +10,13 @@ from diffusion_blocks_plus_plus.llama.model import LlamaDiTForCausalLM
 
 def format_mem(bytes: int):
     if bytes >= 1e12:
-        return f"{bytes/1e12:#.4G} TB"
+        return f"{bytes / 1e12:#.4G} TB"
     elif bytes >= 1e9:
-        return f"{bytes/1e9:#.4G} GB"
+        return f"{bytes / 1e9:#.4G} GB"
     elif bytes >= 1e6:
-        return f"{bytes/1e6:#.4G} MB"
+        return f"{bytes / 1e6:#.4G} MB"
     elif bytes >= 1e3:
-        return f"{bytes/1e3:#.4G} KB"
+        return f"{bytes / 1e3:#.4G} KB"
     else:
         return f"{bytes} B"
 

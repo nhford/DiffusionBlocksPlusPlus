@@ -37,7 +37,9 @@ def plot_full_sweeps(directory):
         for points in GRID_POINTS
     }
     if set(scores) != expected or len(rows) != len(expected):
-        raise ValueError(f"Expected exactly one result per full sweep setting in {source}")
+        raise ValueError(
+            f"Expected exactly one result per full sweep setting in {source}"
+        )
     if any(not 0 <= score <= 1 for score in scores.values()):
         raise ValueError(f"Expected accuracy fractions between 0 and 1 in {source}")
 
@@ -49,7 +51,10 @@ def plot_full_sweeps(directory):
             ax.plot(
                 GRID_POINTS,
                 [scores[variant, solver, points] for points in GRID_POINTS],
-                label=label, color=color, marker=marker, linewidth=2,
+                label=label,
+                color=color,
+                marker=marker,
+                linewidth=2,
             )
         ax.axhline(VIT_ACCURACY, color="#475569", linestyle="--", label="ViT (59.32%)")
         ax.set_xscale("log", base=2)
@@ -74,11 +79,11 @@ def plot_legacy_logs(directory):
         match = re.fullmatch(r"(.+)_(\d+)", path.stem)
         if not match:
             continue
-        values = re.findall(
-            r"test/acc\s*[│|]\s*([0-9.eE+\-]+)", path.read_text()
-        )
+        values = re.findall(r"test/acc\s*[│|]\s*([0-9.eE+\-]+)", path.read_text())
         if len(values) != 1:
-            raise ValueError(f"Expected one final test/acc in {path}; found {len(values)}")
+            raise ValueError(
+                f"Expected one final test/acc in {path}; found {len(values)}"
+            )
         rows.append((match[1], int(match[2]), float(values[0])))
     if not rows:
         raise ValueError(f"No matching evaluation logs in {directory}")
@@ -99,20 +104,32 @@ def plot_legacy_logs(directory):
         points = [(steps, acc) for name, steps, acc in plot_rows if name == method]
         if points:
             steps, accuracy = zip(*points)
-            ax.plot(steps, accuracy, marker="o", linewidth=2, color=color,
-                    label=method.capitalize())
+            ax.plot(
+                steps,
+                accuracy,
+                marker="o",
+                linewidth=2,
+                color=color,
+                label=method.capitalize(),
+            )
     ticks = sorted({steps for _, steps, _ in plot_rows})
     ax.set_xscale("log")
     ax.set_xticks(ticks, labels=[str(step) for step in ticks])
     ax.tick_params(axis="x", labelsize=9)
     ax.minorticks_off()
     ax.yaxis.set_major_formatter(PercentFormatter(1))
-    ax.set(xlabel="Number of inference steps (log scale)", ylabel="Test accuracy",
-           title="DiffusionBlocks++: Test accuracy by integration method for B=3 Blocks")
+    ax.set(
+        xlabel="Number of inference steps (log scale)",
+        ylabel="Test accuracy",
+        title="DiffusionBlocks++: Test accuracy by integration method for B=3 Blocks",
+    )
     ax.grid(True, alpha=0.22)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(frameon=False)
-    for filename in ["unnormalized-partial-model-test-accuracy.png", "test_accuracy.pdf"]:
+    for filename in [
+        "unnormalized-partial-model-test-accuracy.png",
+        "test_accuracy.pdf",
+    ]:
         output = directory / filename
         fig.savefig(output, dpi=200)
         print(output)
@@ -125,7 +142,9 @@ def main():
     parser.add_argument(
         "directory", nargs="?", type=Path, default=Path(__file__).resolve().parent
     )
-    parser.add_argument("--legacy-logs", action="store_true", help="Read individual evaluation logs")
+    parser.add_argument(
+        "--legacy-logs", action="store_true", help="Read individual evaluation logs"
+    )
     args = parser.parse_args()
     if args.legacy_logs:
         plot_legacy_logs(args.directory)
