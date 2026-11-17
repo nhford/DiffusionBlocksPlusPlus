@@ -5,7 +5,7 @@ import psutil
 import torch
 from torch.optim import Optimizer
 
-from diffusion_blocks_plus_plus.llama.model import LlamaDiTForCausalLM
+from .model import LlamaDiTForCausalLM
 
 
 def format_mem(bytes: int):
