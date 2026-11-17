@@ -4,9 +4,9 @@
 <img alt="overview" src="./overview.jpg" title="overview">
 </div>
 
-> We propose ***DiffusionBlocks***, a principled framework that partitions transformers into independently trainable blocks, reducing memory requirements proportionally while maintaining competitive performance across diverse architectures and tasks.
+> We propose **_DiffusionBlocks_**, a principled framework that partitions transformers into independently trainable blocks, reducing memory requirements proportionally while maintaining competitive performance across diverse architectures and tasks.
 
-This is an official implementation of *[DiffusionBlocks](https://arxiv.org/abs/2506.14202)* on image classification using Vision Transformers (ViT).
+This is an official implementation of _[DiffusionBlocks](https://arxiv.org/abs/2506.14202)_ on image classification using Vision Transformers (ViT).
 
 ## Installation
 
@@ -44,7 +44,7 @@ uv run python -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 --mode
 uv run python -m src.diffusion_blocks_plus_plus.deploy_vit train cifar100 --model_type dblock
 ```
 
-* **NOTE:** the total epochs in DiffusionBlocks is multiplied by the number of blocks to align the total number of iterations with the baseline as one step in DiffusionBlocks corresponds to training for one block.
+- **NOTE:** the total epochs in DiffusionBlocks is multiplied by the number of blocks to align the total number of iterations with the baseline as one step in DiffusionBlocks corresponds to training for one block.
 
 <details>
 
@@ -107,6 +107,20 @@ the inference step count is independent and defaults to that block count.
 ```bash
 uv run main.py test cifar100 --model_type dblock \
     --ckpt_path "$CKPT_PATH" --num_blocks 3 --num_inference_steps 12
+```
+
+## Development
+
+**Formatting and Linting**
+To format the code, run
+```sh
+uv run ruff format
+```
+
+**Testing**
+To test the code, run
+```sh
+uv run pytest -v
 ```
 
 ## Acknowledgement
