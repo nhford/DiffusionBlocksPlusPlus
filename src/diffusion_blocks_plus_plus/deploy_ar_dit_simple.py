@@ -36,12 +36,33 @@ from .llama.noise_level_manager import NoiseLevelDistribution
 from .llama.vram_tracker import MemoryTracker
 
 
+def build_timesteps(
+    inputs_embeds: torch.Tensor, timestep: torch.Tensor | float, mode: str
+) -> torch.Tensor:
+    """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
+    batch_size, sequence_length = inputs_embeds.shape[:2]
+    timesteps = (
+        torch.as_tensor(
+            timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
+        )
+        .reshape(-1, 1)
+        .expand(batch_size, 1)
+    )
+    if mode == "uniform":
+        return timesteps
+    if mode == "per-token":
+        clean = inputs_embeds.new_zeros((batch_size, sequence_length // 2))
+        return torch.cat([clean, timesteps.expand_as(clean)], dim=1)
+    raise ValueError(f"Unknown timestep conditioning mode: {mode}")
+
+
 def train_block(
     model: LlamaDiTForCausalLM,
     block_idx: int,
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
     train_config: LlamaTrainConfig,
     model_config: LlamaDiTRunModelConfig,
 ):
@@ -94,7 +115,15 @@ def train_block(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **({"timestep": sigmas.log()} if model_config.embed_timesteps else {}),
+            **(
+                {
+                    "timestep": build_timesteps(
+                        features, sigmas.log(), timestep_conditioning
+                    )
+                }
+                if model_config.embed_timesteps
+                else {}
+            ),
         )
 
         memory_tracker.measure_mem_act()
@@ -127,6 +156,7 @@ def train_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
     train_config: LlamaTrainConfig,
     model_config: LlamaDiTRunModelConfig,
 ) -> list[dict]:
@@ -146,6 +176,7 @@ def train_model(
                 dataloader=dataloader,
                 device=device,
                 noise_schedule=noise_schedule,
+                timestep_conditioning=timestep_conditioning,
                 train_config=train_config,
                 model_config=model_config,
             )
@@ -219,6 +250,7 @@ def evaluate_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
     test_config: LlamaTestConfig,
     model_config: LlamaDiTRunModelConfig,
 ):
@@ -280,19 +312,19 @@ def evaluate_model(
             current_block.eval()
             model.input_embedding.eval()
 
-            timestep_embedding_kwarg = {}
-            if model_config.embed_timesteps:
-                timestep_embedding_kwarg["timestep"] = torch.full(
-                    (noisy_embeddings.shape[0],), timestep
-                )
-
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
             outputs: CausalLMOutputWithPast = current_block(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                **timestep_embedding_kwarg,
+                **{
+                    "timestep": build_timesteps(
+                        inputs_embeds, timestep, timestep_conditioning
+                    )
+                }
+                if model.config.embed_timesteps
+                else {},
             )
 
             logits = outputs.logits
@@ -339,6 +371,12 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--log-path")
     parser.add_argument("-c", "--config")
 
+    parser.add_argument(
+        "--timestep-conditioning",
+        choices=["uniform", "per-token"],
+        default="uniform",
+    )
+
     args = parser.parse_args()
 
     if args.action not in ["train", "evaluate"]:
@@ -382,6 +420,7 @@ if __name__ == "__main__":
         intermediate_size=3072,
         num_blocks=run_config.model_config.num_blocks,
         use_timestep_embedding=run_config.model_config.embed_timesteps,
+        timestep_conditioning=args.timestep_conditioning,
         block_boundaries=noise_schedule.get_block_stdevs(
             run_config.model_config.num_blocks
         ),
@@ -402,6 +441,7 @@ if __name__ == "__main__":
             dataloader=train_dataloader,
             device=device,
             noise_schedule=noise_schedule,
+            timestep_conditioning=args.timestep_conditioning,
             train_config=run_config.train_config,
             model_config=run_config.model_config,
         )
@@ -421,6 +461,7 @@ if __name__ == "__main__":
             dataloader=test_dataloader,
             device=device,
             noise_schedule=noise_schedule,
+            timestep_conditioning=args.timestep_conditioning,
             test_config=run_config.test_config,
             model_config=run_config.model_config,
         )
