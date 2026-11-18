@@ -368,7 +368,6 @@ if __name__ == "__main__":
     if args.config is not None:
         run_config = load_config(args.config)
 
-
     train_dataloader, test_dataloader = load_data(run_config.data_config)
 
     noise_schedule = NoiseLevelDistribution()
