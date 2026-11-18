@@ -43,9 +43,13 @@ def build_timesteps(
 ) -> torch.Tensor:
     """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
     batch_size, sequence_length = inputs_embeds.shape[:2]
-    timesteps = torch.as_tensor(
-        timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
-    ).reshape(-1, 1).expand(batch_size, 1)
+    timesteps = (
+        torch.as_tensor(
+            timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
+        )
+        .reshape(-1, 1)
+        .expand(batch_size, 1)
+    )
     if mode == "uniform":
         return timesteps
     if mode == "per-token":
@@ -153,9 +157,12 @@ def train_model(
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
             block_results = train_block(
-                
-                model, block_idx, dataloader, device, noise_schedule, timestep_conditioning
-            
+                model,
+                block_idx,
+                dataloader,
+                device,
+                noise_schedule,
+                timestep_conditioning,
             )
             results += [{"block_idx": block_idx, **row} for row in block_results]
 
@@ -235,7 +242,9 @@ def evaluate_model(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                timestep=build_timesteps(inputs_embeds, timestep, timestep_conditioning),
+                timestep=build_timesteps(
+                    inputs_embeds, timestep, timestep_conditioning
+                ),
             )
 
             logits = outputs.logits
@@ -286,7 +295,7 @@ if __name__ == "__main__":
         "--timestep-conditioning",
         choices=["uniform", "per-token"],
         default="uniform",
-    )    
+    )
 
     args = parser.parse_args()
 
@@ -310,7 +319,6 @@ if __name__ == "__main__":
     if action == "evaluate" and checkpoint_load_path is None:
         raise ValueError("Must provide model for evaluation")
 
-    
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf")
     assert isinstance(tokenizer, LlamaTokenizerFast)
     # This is because the attention mask must not attend to padding tokens.
@@ -376,7 +384,9 @@ if __name__ == "__main__":
         model.load_checkpoint(checkpoint_load_path)
 
     if action == "train":
-        results_dict = train_model(model, train_dataloader, device, noise_schedule, args.timestep_conditioning)
+        results_dict = train_model(
+            model, train_dataloader, device, noise_schedule, args.timestep_conditioning
+        )
 
         model.save_checkpoint(checkpoint_save_path)
 
@@ -385,5 +395,5 @@ if __name__ == "__main__":
 
     if action == "evaluate":
         evaluate_model(
-        model, test_dataloader, device, noise_schedule, args.timestep_conditioning
-    )
+            model, test_dataloader, device, noise_schedule, args.timestep_conditioning
+        )
