@@ -29,7 +29,6 @@ from .llama.vram_tracker import MemoryTracker
 SEQUENCE_LENGTH = 128  # TODO: 256 is prod
 BATCH_SIZE = 2  # TODO: Should be 256 as in original paper
 LEARNING_RATE = 0.001
-EMBED_TIMESTEPS = False
 EVAL_NUM_STEPS = 10
 NUM_EPOCHS = 1
 
@@ -39,12 +38,33 @@ DEBUG_FORCE_COND = False
 DEBUG_LOG_VRAM = True
 
 
+def build_timesteps(
+    inputs_embeds: torch.Tensor, timestep: torch.Tensor | float, mode: str
+) -> torch.Tensor:
+    """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
+    batch_size, sequence_length = inputs_embeds.shape[:2]
+    timesteps = (
+        torch.as_tensor(
+            timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
+        )
+        .reshape(-1, 1)
+        .expand(batch_size, 1)
+    )
+    if mode == "uniform":
+        return timesteps
+    if mode == "per-token":
+        clean = inputs_embeds.new_zeros((batch_size, sequence_length // 2))
+        return torch.cat([clean, timesteps.expand_as(clean)], dim=1)
+    raise ValueError(f"Unknown timestep conditioning mode: {mode}")
+
+
 def train_block(
     model: LlamaDiTForCausalLM,
     block_idx: int,
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
 ):
     for i in range(model.num_blocks):
         model.unload_block(i)
@@ -93,7 +113,7 @@ def train_block(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **({"timestep": sigmas.log()} if EMBED_TIMESTEPS else {}),
+            timestep=build_timesteps(features, sigmas.log(), timestep_conditioning),
         )
 
         memory_tracker.measure_mem_act()
@@ -126,6 +146,7 @@ def train_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
 ) -> list[dict]:
     print(
         f"Training model on {len(dataloader.dataset)} samples for {NUM_EPOCHS} epochs."  # type: ignore[reportArgumentType]
@@ -136,7 +157,12 @@ def train_model(
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(range(NUM_EPOCHS), leave=False, desc="Epoch"):
             block_results = train_block(
-                model, block_idx, dataloader, device, noise_schedule
+                model,
+                block_idx,
+                dataloader,
+                device,
+                noise_schedule,
+                timestep_conditioning,
             )
             results += [{"block_idx": block_idx, **row} for row in block_results]
 
@@ -149,6 +175,7 @@ def evaluate_model(
     dataloader: DataLoader,
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
+    timestep_conditioning: str,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
 
@@ -209,19 +236,15 @@ def evaluate_model(
             current_block.eval()
             model.input_embedding.eval()
 
-            timestep_embedding_kwarg = {}
-            if EMBED_TIMESTEPS:
-                timestep_embedding_kwarg["timestep"] = torch.full(
-                    (noisy_embeddings.shape[0],), timestep
-                )
-
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
             outputs: CausalLMOutputWithPast = current_block(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                **timestep_embedding_kwarg,
+                timestep=build_timesteps(
+                    inputs_embeds, timestep, timestep_conditioning
+                ),
             )
 
             logits = outputs.logits
@@ -267,6 +290,12 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--from-ckpt")
     parser.add_argument("-o", "--to-ckpt")
     parser.add_argument("-l", "--log-path")
+
+    parser.add_argument(
+        "--timestep-conditioning",
+        choices=["uniform", "per-token"],
+        default="uniform",
+    )
 
     args = parser.parse_args()
 
@@ -343,7 +372,8 @@ if __name__ == "__main__":
         num_attention_heads=12,
         intermediate_size=3072,
         num_blocks=4,
-        use_timestep_embedding=EMBED_TIMESTEPS,
+        use_timestep_embedding=True,
+        timestep_conditioning=args.timestep_conditioning,
         block_boundaries=noise_schedule.get_block_stdevs(4),
     )
 
@@ -354,7 +384,9 @@ if __name__ == "__main__":
         model.load_checkpoint(checkpoint_load_path)
 
     if action == "train":
-        results_dict = train_model(model, train_dataloader, device, noise_schedule)
+        results_dict = train_model(
+            model, train_dataloader, device, noise_schedule, args.timestep_conditioning
+        )
 
         model.save_checkpoint(checkpoint_save_path)
 
@@ -362,4 +394,6 @@ if __name__ == "__main__":
         pandas.DataFrame(results_dict).to_csv(metrics_save_path)
 
     if action == "evaluate":
-        evaluate_model(model, test_dataloader, device, noise_schedule)
+        evaluate_model(
+            model, test_dataloader, device, noise_schedule, args.timestep_conditioning
+        )
