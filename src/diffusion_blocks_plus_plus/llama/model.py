@@ -113,7 +113,7 @@ class TimestepEmbedder(nn.Module):
     [batch_size, hidden_size].
     """
 
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+    def __init__(self, hidden_size, frequency_embedding_size=256, apply_freq_fix=True):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size),
@@ -121,9 +121,10 @@ class TimestepEmbedder(nn.Module):
             nn.Linear(hidden_size, hidden_size),
         )
         self.frequency_embedding_size = frequency_embedding_size
+        self.apply_freq_fix = apply_freq_fix
 
     @staticmethod
-    def timestep_embedding(t, dim, max_frequency=10000):
+    def timestep_embedding(t, dim, max_frequency=10000, apply_freq_fix=True):
         # Note: We modify Sakana.ai's implementation of the code here to use a
         # large maximum frequency instead of a period.
         # This should make the timestep embedding more informative.
@@ -131,6 +132,8 @@ class TimestepEmbedder(nn.Module):
         freqs = torch.exp(
             math.log(max_frequency) * torch.arange(start=0, end=half) / half
         ).to(t.device)
+        if not apply_freq_fix:
+            freqs = freqs.reciprocal()
         args = t[:, None] * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
@@ -140,9 +143,11 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t):
-        t_freq = self.timestep_embedding(t, self.frequency_embedding_size).to(
-            dtype=next(self.parameters()).dtype
-        )
+        t_freq = self.timestep_embedding(
+            t,
+            self.frequency_embedding_size,
+            apply_freq_fix=self.apply_freq_fix,
+        ).to(dtype=next(self.parameters()).dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -178,6 +183,7 @@ class LlamaDiTConfig(LlamaConfig):
         use_timestep_embedding=True,
         num_blocks=2,
         block_boundaries: list[float] | None = None,
+        apply_freq_fix=True,
         **kwargs,
     ):
         super().__init__(
@@ -221,6 +227,7 @@ class LlamaDiTConfig(LlamaConfig):
             self.block_boundaries = DEFAULT_SCHEDULE.get_block_stdevs(self.num_blocks)
         else:
             self.block_boundaries = block_boundaries
+        self.apply_freq_fix = apply_freq_fix
 
 
 class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
@@ -325,7 +332,9 @@ class LlamaDiTModel(LlamaPreTrainedModel):
             self.norm = AdaRMS(
                 config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
             )
-            self.time_embedder = TimestepEmbedder(config.cond_hidden_size)
+            self.time_embedder = TimestepEmbedder(
+                config.cond_hidden_size, apply_freq_fix=config.apply_freq_fix
+            )
         else:
             # We add this so that large norms from noise process don't throw off our results.
             self.input_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
