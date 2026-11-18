@@ -56,6 +56,7 @@ class LlamaDiTRunModelConfig:
     num_hidden_layers: int = 12
     num_blocks: int = 3
     embed_timesteps: bool = True
+    timestep_conditioning: str = "uniform"
     apply_freq_fix: bool = True
     block_diffusion_size: int = 1
 
