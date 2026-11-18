@@ -2,15 +2,14 @@
 
 import argparse
 import csv
-from pathlib import Path
 import re
+from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
-
 
 STYLES = {
     "euler": ("Euler", "#2563eb", "o"),
