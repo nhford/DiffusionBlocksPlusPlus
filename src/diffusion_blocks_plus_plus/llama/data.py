@@ -6,8 +6,8 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 
-from diffusion_blocks_plus_plus.llama.attention_masks import build_train_attention_mask
-from diffusion_blocks_plus_plus.llama.noise_level_manager import NoiseLevelDistribution
+from .attention_masks import build_train_attention_mask
+from .noise_level_manager import NoiseLevelDistribution
 
 
 def trivial_random_dataset(num_samples, sequence_len):
