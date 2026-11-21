@@ -1,5 +1,4 @@
 import argparse
-import itertools
 import math
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +32,7 @@ from .llama.data import (
 )
 from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
+from .llama.samplers import sample
 from .llama.vram_tracker import MemoryTracker
 
 
@@ -337,14 +337,9 @@ def evaluate_model(
         noise_levels = noise_schedule.get_discrete_stdevs(test_config.eval_num_steps)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
-        for stdev, next_stdev in tqdm(
-            list(itertools.pairwise(noise_levels)),
-            desc="Denoise Step",
-            leave=False,
-        ):
-            dt = math.log(next_stdev) - math.log(stdev)
-            noisy_embeddings += ODE(noisy_embeddings, math.log(stdev)) * dt
-        t_final = math.log(noise_levels[-1])
+        timesteps = [math.log(stdev) for stdev in noise_levels]
+        noisy_embeddings = sample(noisy_embeddings, timesteps, ODE)
+        t_final = timesteps[-1]
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
         assert predictions.shape == (batch_size, (sequence_length - 1))
 
