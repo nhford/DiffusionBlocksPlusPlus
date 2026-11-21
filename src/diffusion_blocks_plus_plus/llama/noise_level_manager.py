@@ -96,6 +96,8 @@ class NoiseLevelDistribution:
         num_steps: int,
     ) -> list[float]:
         """From src/diffusion_blocks_plus_plus/vit/dblock_modules.py"""
+        if num_steps < 2:
+            raise ValueError("At least two noise levels are required for sampling")
         log_stdev_min = np.log(self.stdev_min)
         log_stdev_max = np.log(self.stdev_max)
         cdf_min = norm.cdf((log_stdev_min - self.p_mean) / self.p_std)
