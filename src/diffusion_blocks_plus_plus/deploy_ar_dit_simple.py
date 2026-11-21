@@ -338,7 +338,9 @@ def evaluate_model(
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
         timesteps = [math.log(stdev) for stdev in noise_levels]
-        noisy_embeddings = sample(noisy_embeddings, timesteps, ODE)
+        noisy_embeddings = sample(
+            noisy_embeddings, timesteps, ODE, sampler=test_config.sampler
+        )
         t_final = timesteps[-1]
         predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
         assert predictions.shape == (batch_size, (sequence_length - 1))
