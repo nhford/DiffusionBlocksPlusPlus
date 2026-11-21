@@ -50,6 +50,8 @@ from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
 )
 
+from diffusion_blocks_plus_plus.disk_offloading import map_to_file
+
 from .noise_level_manager import NoiseLevelDistribution
 
 DEFAULT_SCHEDULE = NoiseLevelDistribution()
@@ -764,13 +766,11 @@ class LlamaDiTBlockForCausalLM(LlamaPreTrainedModel):
         )
 
 
-class LlamaDiTForCausalLM:
-    """DiffusionBlocks implementation with support for dynamic loading.
-
-    Note that because this module does weird things with weight offloading, this is not a PyTorch module.
-    """
+class LlamaDiTForCausalLM(LlamaPreTrainedModel):
+    """DiffusionBlocks implementation."""
 
     def __init__(self, config: LlamaDiTConfig):
+        super().__init__(config)
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.padding_idx = config.pad_token_id
@@ -778,74 +778,48 @@ class LlamaDiTForCausalLM:
         self.rms_norm_eps = config.rms_norm_eps
         self.save_path = tempfile.TemporaryDirectory(prefix="llama_dit_for_causal_lm_")
         self.block_boundaries = [*config.block_boundaries]
-
-        # Embedding is always loaded in memory
         self.input_embedding = nn.Embedding(
             self.vocab_size, self.hidden_size, self.padding_idx
         )
 
+        self.blocks = nn.ModuleList()
         for block_idx in range(self.num_blocks):
-            block_path = Path(self.save_path.name) / str(block_idx)
-            if not os.path.isdir(block_path):
-                block = LlamaDiTBlockForCausalLM(config)
-                block.save_pretrained(block_path)
-                del block
+            block = LlamaDiTBlockForCausalLM(config)
+            map_to_file(block, Path(self.save_path.name) / f"block_{block_idx}")
+            self.blocks.append(block)
 
-        # By default, no blocks are loaded
-        self.blocks_loaded: list[LlamaDiTBlockForCausalLM | None] = [
-            None
-        ] * self.num_blocks
+        self.is_mapped = [True] * self.num_blocks
+        self.primary_device = torch.device("cpu")
 
-    def load_block(self, block_idx: int):
-        block_path = Path(self.save_path.name) / str(block_idx)
-        if self.blocks_loaded[block_idx] is None:
-            self.blocks_loaded[block_idx] = LlamaDiTBlockForCausalLM.from_pretrained(
-                block_path
-            )
+        self.post_init()
 
-    def save_block(self, block_idx: int):
-        block_path = Path(self.save_path.name) / str(block_idx)
-        current_block = self.blocks_loaded[block_idx]
-        if current_block is not None:
-            current_block.save_pretrained(block_path)
+    def block_parameters(self, block_idx: int):
+        yield from self.input_embedding.parameters()
+        yield from self.blocks[block_idx].parameters()
 
-    def unload_block(self, block_idx: int):
-        self.save_block(block_idx)
-        current_block = self.blocks_loaded[block_idx]
-        if current_block is not None:
-            current_block.to("cpu")
-            del current_block
-        self.blocks_loaded[block_idx] = None
-        gc.collect()
-        torch.cuda.empty_cache()
-
-    def save_checkpoint(self, path: str | os.PathLike):
-        for i in range(self.num_blocks):
-            self.save_block(i)
-        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
-        torch.save(self.input_embedding.state_dict(), embedding_path)
-        shutil.copytree(self.save_path.name, path)
-
-    def load_checkpoint(self, path: str | os.PathLike):
-        for i in range(self.num_blocks):
-            self.unload_block(i)
-        shutil.copytree(path, self.save_path.name, dirs_exist_ok=True)
-        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
-        self.input_embedding.load_state_dict(torch.load(embedding_path))
-
-    def to_device(self, device):
-        for i in range(self.num_blocks):
-            current_block = self.blocks_loaded[i]
-            if current_block is not None:
-                current_block.to(device)
+    def set_primary_device(self, device: torch.device):
+        self.primary_device = device
+        for block_idx in range(self.num_blocks):
+            if not self.is_mapped[block_idx]:
+                self.blocks[block_idx].to(device)
         self.input_embedding.to(device)
 
-    def loaded_parameters(self):
-        yield from self.input_embedding.parameters()
-        for i in range(self.num_blocks):
-            current_block = self.blocks_loaded[i]
-            if current_block is not None:
-                yield from current_block.parameters()
+    def set_active_block(self, block_idx: int):
+        if not 0 <= block_idx < self.num_blocks:
+            raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
+
+        for mapping_block_idx, block in enumerate(self.blocks):
+            if mapping_block_idx == block_idx:
+                continue
+            if self.is_mapped[mapping_block_idx]:
+                continue
+
+            assert isinstance(block, LlamaDiTBlockForCausalLM)
+            map_to_file(block, Path(self.save_path.name) / f"block_{mapping_block_idx}")
+            self.is_mapped[mapping_block_idx] = True
+
+        self.blocks[block_idx].to(self.primary_device)
+        self.is_mapped[block_idx] = False
 
     def embed_input_ids(self, input_ids: torch.Tensor):
         return F.rms_norm(
@@ -877,3 +851,9 @@ class LlamaDiTForCausalLM:
 
     def noise_boundaries(self, block_idx: int):
         return self.block_boundaries[block_idx], self.block_boundaries[block_idx + 1]
+
+    def forward(self):
+        # TODO: Figure out the desired signature here.
+        # We can begin by translating the old code with the non-forward methods,
+        # and then use this to abstract over all of the block call sites.
+        pass

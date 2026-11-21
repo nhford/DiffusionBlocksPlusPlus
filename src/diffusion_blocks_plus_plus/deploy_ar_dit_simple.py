@@ -65,19 +65,17 @@ def train_block(
     train_config: LlamaTrainConfig,
     model_config: LlamaDiTRunModelConfig,
 ):
-    for i in range(model.num_blocks):
-        model.unload_block(i)
-    model.load_block(block_idx)
-    current_block = model.blocks_loaded[block_idx]
+    model.set_primary_device(device)
+    model.set_active_block(block_idx)
+
+    current_block = model.blocks[block_idx]
     assert current_block is not None
     current_block.train()
     model.input_embedding.train()
 
     min_stdev, max_stdev = model.noise_boundaries(block_idx)
 
-    model.to_device(device)
-
-    optimizer = AdamW(model.loaded_parameters(), lr=train_config.learning_rate)
+    optimizer = AdamW(model.block_parameters(block_idx), lr=train_config.learning_rate)
 
     memory_tracker = MemoryTracker(model, optimizer, device)
 
@@ -88,7 +86,7 @@ def train_block(
         batch_size, sequence_length = batch["input_ids"].shape
 
         memory_tracker.reset()
-        memory_tracker.measure_mem_weights()
+        memory_tracker.measure_mem_weights(block_idx)
         memory_tracker.begin_forward()
 
         token_ids = batch["input_ids"].to(device)
@@ -135,7 +133,7 @@ def train_block(
         loss = (loss * labels_mask).sum() / labels_mask.sum()
         loss.backward()
 
-        memory_tracker.measure_mem_grad()
+        memory_tracker.measure_mem_grad(block_idx)
 
         optimizer.step()
 
@@ -251,8 +249,8 @@ def evaluate_model(
     model_config: LlamaDiTRunModelConfig,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
+    model.set_primary_device(device)
 
-    model.input_embedding.to(device)
     # We know the dataset has a length
     print(f"Evaluating model on {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
 
@@ -294,17 +292,23 @@ def evaluate_model(
         position_ids = torch.cat([position_ids[:, :-1], position_ids[:, 1:]], dim=1)
         assert position_ids.shape == (batch_size, (sequence_length - 1) * 2)
 
-        def get_logits(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
+        @torch.no_grad
+        def get_logits(
+            noisy_embeddings: torch.Tensor,
+            timestep: float,
+            *,
+            clean_embeddings=clean_embeddings,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            sequence_length=sequence_length,
+        ) -> torch.Tensor:
             """Get the logit predictions for an embedding's denoised embedding."""
             current_block_idx = model.get_block_from_timestep(timestep)
 
-            for block_idx in range(model.num_blocks):
-                if block_idx != current_block_idx:
-                    model.unload_block(block_idx)
-            model.load_block(current_block_idx)
-            current_block = model.blocks_loaded[current_block_idx]
+            model.set_active_block(current_block_idx)
+
+            current_block = model.blocks[current_block_idx]
             assert current_block is not None
-            current_block.to(device)  # type: ignore https://github.com/huggingface/transformers/issues/38052
             current_block.eval()
             model.input_embedding.eval()
 
@@ -327,6 +331,7 @@ def evaluate_model(
             assert logits is not None
             return logits[:, sequence_length - 1 :, :]
 
+        @torch.no_grad
         def ODE(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
             """Get the change in hidden embedding with respect to timestep"""
             noisy_logits = get_logits(noisy_embeddings, timestep)
@@ -419,9 +424,10 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = LlamaDiTForCausalLM(config)
-    if checkpoint_load_path is not None:
-        model.load_checkpoint(checkpoint_load_path)
+    if checkpoint_load_path is None:
+        model = LlamaDiTForCausalLM(config)
+    else:
+        model = LlamaDiTForCausalLM.from_pretrained(checkpoint_load_path)
 
     if action == "train":
         if run_config.train_config is None:
@@ -435,7 +441,7 @@ if __name__ == "__main__":
             model_config=run_config.model_config,
         )
 
-        model.save_checkpoint(checkpoint_save_path)
+        model.save_pretrained(checkpoint_save_path, max_shard_size="1GB")
 
         Path(metrics_save_path).parent.mkdir(parents=True, exist_ok=True)
         pandas.DataFrame(results_dict).to_csv(metrics_save_path)
@@ -445,6 +451,7 @@ if __name__ == "__main__":
     if action == "evaluate":
         if run_config.test_config is None:
             raise ValueError("test_config must not be none when testing")
+
         evaluate_model(
             model=model,
             dataloader=test_dataloader,
