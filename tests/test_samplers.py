@@ -48,3 +48,4 @@ def test_sampler_evaluation_points(sampler, expected_calls, expected_result):
 def test_sampler_rejects_unknown_method():
     with pytest.raises(ValueError, match="Unknown sampler"):
         sample(torch.zeros(1), [1.0, 0.0], lambda x, t: x, "unknown")
+
