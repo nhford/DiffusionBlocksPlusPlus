@@ -16,10 +16,6 @@ def sample(
     The ODE callback returns dx/dt for t = log(sigma). Model selection and
     denoising predictions belong to the caller. Updates modify the supplied
     embeddings in place, matching the original evaluation loop.
-
-    Euler uses one ODE evaluation per interval. Heun and midpoint use two,
-    evaluating the second slope at the endpoint predictor or halfway predictor
-    respectively. All predictor times are in log-noise coordinates.
     """
     if sampler not in {"euler", "heun", "midpoint"}:
         raise ValueError(f"Unknown sampler: {sampler}")
