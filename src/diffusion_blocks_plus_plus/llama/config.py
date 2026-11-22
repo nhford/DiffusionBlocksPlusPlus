@@ -46,6 +46,7 @@ class LlamaTestConfig:
     """Configuration for Test Run"""
 
     eval_num_steps: int = 10
+    sampler: str = "euler"
 
 
 @dataclass

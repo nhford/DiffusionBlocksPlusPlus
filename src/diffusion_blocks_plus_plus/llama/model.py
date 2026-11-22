@@ -833,6 +833,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         return likelihoods @ embeddings
 
     def get_block_from_timestep(self, timestep: float) -> int:
+        """Select by log-noise time; exact boundaries use the lower-noise block."""
         matching_blocks = [
             block_idx - 1
             for block_idx, upper_bound in enumerate(self.block_boundaries)
