@@ -22,6 +22,7 @@
 
 import math
 import tempfile
+from itertools import pairwise
 from pathlib import Path
 from typing import Union, Unpack
 from venv import logger
@@ -774,6 +775,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         self.input_embedding = nn.Embedding(
             self.vocab_size, self.hidden_size, self.padding_idx
         )
+        self.embed_timesteps = config.use_timestep_embedding
 
         self.blocks = nn.ModuleList()
         for block_idx in range(self.num_blocks):
@@ -786,8 +788,19 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
 
         self.post_init()
 
-    def block_parameters(self, block_idx: int):
-        yield from self.input_embedding.parameters()
+    def block_parameters(self, block_idx: int, include_embedding: bool):
+        """Get the trainable parameters for a particular block.
+
+        Args:
+            block_idx: The index of the block thats is being trained.
+            include_embedding: Whether to include the parameters for the input
+                embedding. This should be False if the embedding is frozen.
+        """
+        if not 0 <= block_idx < self.num_blocks:
+            raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
+
+        if include_embedding:
+            yield from self.input_embedding.parameters()
         yield from self.blocks[block_idx].parameters()
 
     def set_primary_device(self, device: torch.device):
@@ -797,7 +810,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
                 self.blocks[block_idx].to(device)
         self.input_embedding.to(device)
 
-    def set_active_block(self, block_idx: int):
+    def set_loaded_block(self, block_idx: int):
         if not 0 <= block_idx < self.num_blocks:
             raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
 
@@ -832,22 +845,72 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         )
         return likelihoods @ embeddings
 
-    def get_block_from_timestep(self, timestep: float) -> int:
+    def get_block_from_timestep(self, timestep: float | torch.Tensor) -> int:
         """Select by log-noise time; exact boundaries use the lower-noise block."""
+        if isinstance(timestep, torch.Tensor):
+            timestep = timestep.float()
+            clean_positions = timestep == 0
+            noisy_positions = ~clean_positions
+            if clean_positions.all():
+                minimum_timestep = maximum_timestep = 0
+            else:
+                minimum_timestep = timestep.where(
+                    noisy_positions, float("infinity")
+                ).min()
+                minimum_timestep = minimum_timestep.item()
+                maximum_timestep = timestep.where(
+                    noisy_positions, float("-infinity")
+                ).max()
+                maximum_timestep = maximum_timestep.item()
+        else:
+            minimum_timestep = maximum_timestep = timestep
+
+        minimum_stdev = math.exp(minimum_timestep)
+        maximum_stdev = math.exp(maximum_timestep)
+
+        extended_stdev_boundaries = [0, *self.block_boundaries[1:-1], float("infinity")]
+
         matching_blocks = [
-            block_idx - 1
-            for block_idx, upper_bound in enumerate(self.block_boundaries)
-            if timestep <= math.log(upper_bound)
+            block_idx
+            for block_idx, (lower_bound, upper_bound) in enumerate(
+                pairwise(extended_stdev_boundaries)
+            )
+            if minimum_stdev >= lower_bound and maximum_stdev <= upper_bound
         ]
         if len(matching_blocks) == 0:
-            return self.num_blocks - 1
-        return max(0, matching_blocks[0])
+            raise ValueError(
+                f"No matching blocks! {minimum_stdev=}, {maximum_stdev=}, {extended_stdev_boundaries=}"
+            )
+        return matching_blocks[0]
 
-    def noise_boundaries(self, block_idx: int):
-        return self.block_boundaries[block_idx], self.block_boundaries[block_idx + 1]
+    def forward(
+        self,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        inputs_embeds: torch.Tensor,
+        timestep: torch.Tensor | None = None,
+        block_idx: int | None = None,
+    ):
+        if timestep is None and self.embed_timesteps:
+            raise ValueError("Must specify timestep when embed_timesteps is true")
 
-    def forward(self):
-        # TODO: Figure out the desired signature here.
-        # We can begin by translating the old code with the non-forward methods,
-        # and then use this to abstract over all of the block call sites.
-        pass
+        if block_idx is None:
+            if timestep is None:
+                raise ValueError("Must specify timestep or block_idx")
+            block_idx = self.get_block_from_timestep(timestep)
+
+        if not 0 <= block_idx < self.num_blocks:
+            raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
+
+        self.set_loaded_block(block_idx)
+
+        target_block = self.blocks[block_idx]
+
+        timestep_embedding = {"timestep": timestep} if self.embed_timesteps else {}
+
+        return target_block(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            **timestep_embedding,
+        )

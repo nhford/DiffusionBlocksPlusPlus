@@ -77,7 +77,7 @@ class MemoryTracker:
             )
         self.usage_dict["weights"] = sum(
             param.numel() * param.element_size()
-            for param in self.model.block_parameters(block_idx)
+            for param in self.model.block_parameters(block_idx, True)
         )
 
     def begin_forward(self):
@@ -101,7 +101,7 @@ class MemoryTracker:
         self._assert_unused(self.usage_dict["gradients"])
         self.usage_dict["gradients"] = sum(
             param.grad.numel() * param.grad.element_size()
-            for param in self.model.block_parameters(block_idx)
+            for param in self.model.block_parameters(block_idx, True)
             if param.grad is not None
         )
         if self.usage_dict["gradients"] == 0:

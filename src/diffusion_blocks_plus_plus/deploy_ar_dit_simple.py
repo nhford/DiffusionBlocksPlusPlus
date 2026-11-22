@@ -66,16 +66,18 @@ def train_block(
     model_config: LlamaDiTRunModelConfig,
 ):
     model.set_primary_device(device)
-    model.set_active_block(block_idx)
+    model.set_loaded_block(block_idx)
 
-    current_block = model.blocks[block_idx]
-    assert current_block is not None
-    current_block.train()
-    model.input_embedding.train()
+    model.train()
 
-    min_stdev, max_stdev = model.noise_boundaries(block_idx)
+    min_stdev, max_stdev = (
+        model.block_boundaries[block_idx],
+        model.block_boundaries[block_idx + 1],
+    )
 
-    optimizer = AdamW(model.block_parameters(block_idx), lr=train_config.learning_rate)
+    optimizer = AdamW(
+        model.block_parameters(block_idx, True), lr=train_config.learning_rate
+    )
 
     memory_tracker = MemoryTracker(model, optimizer, device)
 
@@ -108,19 +110,14 @@ def train_block(
             )
         )
 
-        outputs: CausalLMOutputWithPast = current_block(
+        outputs: CausalLMOutputWithPast = model(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **(
-                {
-                    "timestep": build_timesteps(
-                        features, sigmas.log(), model_config.timestep_conditioning
-                    )
-                }
-                if model_config.embed_timesteps
-                else {}
+            timestep=build_timesteps(
+                features, sigmas.log(), model_config.timestep_conditioning
             ),
+            block_idx=block_idx,
         )
 
         memory_tracker.measure_mem_act()
@@ -303,28 +300,21 @@ def evaluate_model(
             sequence_length=sequence_length,
         ) -> torch.Tensor:
             """Get the logit predictions for an embedding's denoised embedding."""
-            current_block_idx = model.get_block_from_timestep(timestep)
-
-            model.set_active_block(current_block_idx)
-
-            current_block = model.blocks[current_block_idx]
-            assert current_block is not None
-            current_block.eval()
-            model.input_embedding.eval()
+            model.eval()
 
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
-            outputs: CausalLMOutputWithPast = current_block(
+            timestep_tensor = build_timesteps(
+                inputs_embeds,
+                timestep,
+                model_config.timestep_conditioning,
+            )
+
+            outputs: CausalLMOutputWithPast = model(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                **{
-                    "timestep": build_timesteps(
-                        inputs_embeds, timestep, model_config.timestep_conditioning
-                    )
-                }
-                if model_config.embed_timesteps
-                else {},
+                timestep=timestep_tensor,
             )
 
             logits = outputs.logits
