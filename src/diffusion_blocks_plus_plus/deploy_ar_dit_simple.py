@@ -367,8 +367,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="deploy_ar_dit_simple.py")
 
     parser.add_argument("action")
-    parser.add_argument("-i", "--from-ckpt")
-    parser.add_argument("-o", "--to-ckpt")
+    parser.add_argument("-i", "--load-ckpt")
+    parser.add_argument("-o", "--save-ckpt")
     parser.add_argument("-l", "--log-path")
     parser.add_argument("-c", "--config")
 
@@ -385,10 +385,10 @@ if __name__ == "__main__":
     config_save_path = default_output_path / "config.yaml"
 
     checkpoint_save_path = default_output_path / "checkpoint"
-    if args.to_ckpt is not None:
-        checkpoint_save_path = Path(args.to_ckpt)
+    if args.save_ckpt is not None:
+        checkpoint_save_path = Path(args.save_ckpt)
 
-    checkpoint_load_path = args.from_ckpt
+    checkpoint_load_path = args.load_ckpt
 
     metrics_save_path = default_output_path / "metrics.csv"
     if args.log_path is not None:
