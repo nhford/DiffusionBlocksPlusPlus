@@ -10,9 +10,6 @@ from transformers.modeling_utils import PreTrainedModel
 
 @torch.no_grad
 def map_to_file(model: PreTrainedModel, path: str | PathLike) -> int:
-    # if True:
-    #     model.to("cpu")
-    #     return 0
     state_dict = model.state_dict(keep_vars=True)
 
     if len(state_dict) != len({id(t) for t in state_dict.values()}):
