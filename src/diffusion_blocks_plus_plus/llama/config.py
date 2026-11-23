@@ -39,6 +39,7 @@ class LlamaTrainConfig:
 
     learning_rate: float = 0.001
     num_epochs: int = 1
+    bd3_lm_block_size: int = 1
 
 
 @dataclass
@@ -47,6 +48,7 @@ class LlamaTestConfig:
 
     eval_num_steps: int = 10
     sampler: str = "euler"
+    bd3_lm_block_size: int = 1
 
 
 @dataclass
@@ -59,7 +61,6 @@ class LlamaDiTRunModelConfig:
     embed_timesteps: bool = True
     timestep_conditioning: str = "uniform"
     apply_freq_fix: bool = True
-    block_diffusion_size: int = 1
 
 
 @dataclass

@@ -14,7 +14,7 @@ from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .llama.attention_masks import (
-    build_train_attention_mask,
+    build_bd3lm_train_attention_mask,
     mask_to_pos,
 )
 from .llama.config import (
@@ -107,6 +107,7 @@ def train_block(
                 block_min_stdev=min_stdev,
                 block_max_stdev=max_stdev,
                 distribution=noise_schedule,
+                bd3_lm_block_size=train_config.bd3_lm_block_size,
             )
         )
 
@@ -277,7 +278,9 @@ def evaluate_model(
             clean_embeddings.shape[2],
         )
 
-        attention_mask = build_train_attention_mask(masked_positions)
+        attention_mask = build_bd3lm_train_attention_mask(
+            masked_positions, test_config.bd3_lm_block_size
+        )
         assert attention_mask.shape == (
             batch_size,
             1,
