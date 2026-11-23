@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
 #
 # This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
@@ -21,13 +20,11 @@
 # This code is adapted from the Hugging Face implementation of Llama 2, which can be found below.
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 
-import gc
 import math
-import os
-import shutil
 import tempfile
+from itertools import pairwise
 from pathlib import Path
-from typing import Optional, Tuple, Union, Unpack
+from typing import Union, Unpack
 from venv import logger
 
 import torch
@@ -50,6 +47,8 @@ from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
 )
 
+from diffusion_blocks_plus_plus.disk_offloading import map_to_file
+
 from .noise_level_manager import NoiseLevelDistribution
 
 DEFAULT_SCHEDULE = NoiseLevelDistribution()
@@ -60,7 +59,7 @@ class AdaRMS(nn.Module):
     (https://arxiv.org/abs/2212.09748).
 
     This layer takes an embedding and a conditioning tensor, whose dimensions
-    must be breadcastable except for the last dimension, computes a bias and
+    must be broadcastable except for the last dimension, computes a bias and
     scale for each channel, and then applies RMSNorm on the embeddings using the
     computed bias and scale.
 
@@ -72,7 +71,7 @@ class AdaRMS(nn.Module):
 
     Shape:
         - Input (embeddings): (batch_size, sequence, features)
-        - Input (conditioning): (batch_size, cond_size)
+        - Input (conditioning): (batch_size, 1 or sequence, cond_size)
         - Output: (batch_size, sequence, features)
     """
 
@@ -89,6 +88,14 @@ class AdaRMS(nn.Module):
             self.linear = nn.Linear(cond_size, features, bias=hidden_bias)
 
     def forward(self, embeddings: torch.Tensor, conditioning: torch.Tensor):
+        if (
+            conditioning.ndim != 3
+            or conditioning.shape[0] != embeddings.shape[0]
+            or conditioning.shape[1] not in (1, embeddings.shape[1])
+        ):
+            raise ValueError(
+                "Conditioning must have shape (batch_size, 1 or sequence_length, cond_size)"
+            )
         rmsnorm_params: torch.Tensor = self.silu(self.linear(conditioning))
         if self.bias:
             scale, bias = rmsnorm_params.chunk(2, -1)
@@ -100,7 +107,7 @@ class AdaRMS(nn.Module):
 
         rms = ((embeddings * embeddings).mean(-1, keepdim=True) + self.eps).sqrt()
 
-        return embeddings / rms * scale[:, None, :] + bias[:, None, :]
+        return embeddings / rms * scale + bias
 
 
 class TimestepEmbedder(nn.Module):
@@ -108,12 +115,12 @@ class TimestepEmbedder(nn.Module):
     This module computes timestep embeddings by running a frequency embedding
     through a MLP.
 
-    This module takes a timestep in the range 0-1 for each batch (tensor of
-    shape [batch_size]), and returns a batch of embeddings
-    [batch_size, hidden_size].
+    Takes log-noise timesteps of shape [batch_size, sequence] and returns
+    embeddings of shape [batch_size, sequence, hidden_size]. Legacy
+    [batch_size] inputs are treated as [batch_size, 1].
     """
 
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+    def __init__(self, hidden_size, frequency_embedding_size=256, apply_freq_fix=True):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(frequency_embedding_size, hidden_size),
@@ -121,9 +128,12 @@ class TimestepEmbedder(nn.Module):
             nn.Linear(hidden_size, hidden_size),
         )
         self.frequency_embedding_size = frequency_embedding_size
+        self.apply_freq_fix = apply_freq_fix
 
     @staticmethod
-    def timestep_embedding(t, dim, max_frequency=10000):
+    def timestep_embedding(t, dim, max_frequency=10000, apply_freq_fix=True):
+        if t.ndim == 1:
+            t = t[:, None]
         # Note: We modify Sakana.ai's implementation of the code here to use a
         # large maximum frequency instead of a period.
         # This should make the timestep embedding more informative.
@@ -131,18 +141,22 @@ class TimestepEmbedder(nn.Module):
         freqs = torch.exp(
             math.log(max_frequency) * torch.arange(start=0, end=half) / half
         ).to(t.device)
-        args = t[:, None] * freqs[None]
+        if not apply_freq_fix:
+            freqs = freqs.reciprocal()
+        args = t[..., None] * freqs
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
             embedding = torch.cat(
-                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
+                [embedding, torch.zeros_like(embedding[..., :1])], dim=-1
             )
         return embedding
 
     def forward(self, t):
-        t_freq = self.timestep_embedding(t, self.frequency_embedding_size).to(
-            dtype=next(self.parameters()).dtype
-        )
+        t_freq = self.timestep_embedding(
+            t,
+            self.frequency_embedding_size,
+            apply_freq_fix=self.apply_freq_fix,
+        ).to(dtype=next(self.parameters()).dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -178,6 +192,7 @@ class LlamaDiTConfig(LlamaConfig):
         use_timestep_embedding=True,
         num_blocks=2,
         block_boundaries: list[float] | None = None,
+        apply_freq_fix=True,
         **kwargs,
     ):
         super().__init__(
@@ -221,6 +236,7 @@ class LlamaDiTConfig(LlamaConfig):
             self.block_boundaries = DEFAULT_SCHEDULE.get_block_stdevs(self.num_blocks)
         else:
             self.block_boundaries = block_boundaries
+        self.apply_freq_fix = apply_freq_fix
 
 
 class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
@@ -251,20 +267,17 @@ class LlamaDiTDecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[
-            Tuple[torch.Tensor, torch.Tensor]
-        ] = None,  # necessary, but kept here for BC
-        timestep_embeddings: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_value: Cache | None = None,
+        output_attentions: bool | None = False,
+        use_cache: bool | None = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor]
+        | None = None,  # necessary, but kept here for BC
+        timestep_embeddings: torch.Tensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tuple[
-        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
-    ]:
+    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
         residual = hidden_states
         if self.use_timestep_embedding:
             hidden_states = self.input_layernorm(hidden_states, timestep_embeddings)
@@ -325,7 +338,9 @@ class LlamaDiTModel(LlamaPreTrainedModel):
             self.norm = AdaRMS(
                 config.cond_hidden_size, config.hidden_size, eps=config.rms_norm_eps
             )
-            self.time_embedder = TimestepEmbedder(config.cond_hidden_size)
+            self.time_embedder = TimestepEmbedder(
+                config.cond_hidden_size, apply_freq_fix=config.apply_freq_fix
+            )
         else:
             # We add this so that large norms from noise process don't throw off our results.
             self.input_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -345,16 +360,16 @@ class LlamaDiTModel(LlamaPreTrainedModel):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        timestep: Optional[torch.FloatTensor] = None,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+        timestep: torch.FloatTensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         output_attentions = (
@@ -387,7 +402,7 @@ class LlamaDiTModel(LlamaPreTrainedModel):
 
         # TODO (joao): remove this exception in v4.56 -- it exists for users that try to pass a legacy cache
         if not isinstance(past_key_values, (type(None), Cache)):
-            raise ValueError(
+            raise TypeError(
                 "The `past_key_values` should be either a `Cache` object or `None`."
             )
 
@@ -511,14 +526,14 @@ class LlamaDiTModel(LlamaPreTrainedModel):
             self.config._attn_implementation == "sdpa"
             and not using_compilable_cache
             and not output_attentions
-        ):
-            if AttentionMaskConverter._ignore_causal_mask_sdpa(
+            and AttentionMaskConverter._ignore_causal_mask_sdpa(
                 attention_mask,
                 inputs_embeds=input_tensor,
                 past_key_values_length=past_seen_tokens,
                 is_training=self.training,
-            ):
-                return None
+            )
+        ):
+            return None
 
         dtype = input_tensor.dtype
         sequence_length = input_tensor.shape[1]
@@ -656,18 +671,18 @@ class LlamaDiTBlockForCausalLM(LlamaPreTrainedModel):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
-        timestep: Optional[torch.FloatTensor] = None,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+        logits_to_keep: int | torch.Tensor = 0,
+        timestep: torch.FloatTensor | None = None,
         **kwargs: Unpack[KwargsForCausalLM],
     ) -> CausalLMOutputWithPast:
         r"""
@@ -745,13 +760,11 @@ class LlamaDiTBlockForCausalLM(LlamaPreTrainedModel):
         )
 
 
-class LlamaDiTForCausalLM:
-    """DiffusionBlocks implementation with support for dynamic loading.
-
-    Note that because this module does weird things with weight offloading, this is not a PyTorch module.
-    """
+class LlamaDiTForCausalLM(LlamaPreTrainedModel):
+    """DiffusionBlocks implementation."""
 
     def __init__(self, config: LlamaDiTConfig):
+        super().__init__(config)
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.padding_idx = config.pad_token_id
@@ -759,74 +772,60 @@ class LlamaDiTForCausalLM:
         self.rms_norm_eps = config.rms_norm_eps
         self.save_path = tempfile.TemporaryDirectory(prefix="llama_dit_for_causal_lm_")
         self.block_boundaries = [*config.block_boundaries]
-
-        # Embedding is always loaded in memory
         self.input_embedding = nn.Embedding(
             self.vocab_size, self.hidden_size, self.padding_idx
         )
+        self.embed_timesteps = config.use_timestep_embedding
 
+        self.blocks = nn.ModuleList()
         for block_idx in range(self.num_blocks):
-            block_path = Path(self.save_path.name) / str(block_idx)
-            if not os.path.isdir(block_path):
-                block = LlamaDiTBlockForCausalLM(config)
-                block.save_pretrained(block_path)
-                del block
+            block = LlamaDiTBlockForCausalLM(config)
+            map_to_file(block, Path(self.save_path.name) / f"block_{block_idx}")
+            self.blocks.append(block)
 
-        # By default, no blocks are loaded
-        self.blocks_loaded: list[LlamaDiTBlockForCausalLM | None] = [
-            None
-        ] * self.num_blocks
+        self.is_mapped = [True] * self.num_blocks
+        self.primary_device = torch.device("cpu")
 
-    def load_block(self, block_idx: int):
-        block_path = Path(self.save_path.name) / str(block_idx)
-        if self.blocks_loaded[block_idx] is None:
-            self.blocks_loaded[block_idx] = LlamaDiTBlockForCausalLM.from_pretrained(
-                block_path
-            )
+        self.post_init()
 
-    def save_block(self, block_idx: int):
-        block_path = Path(self.save_path.name) / str(block_idx)
-        current_block = self.blocks_loaded[block_idx]
-        if current_block is not None:
-            current_block.save_pretrained(block_path)
+    def block_parameters(self, block_idx: int, include_embedding: bool):
+        """Get the trainable parameters for a particular block.
 
-    def unload_block(self, block_idx: int):
-        self.save_block(block_idx)
-        current_block = self.blocks_loaded[block_idx]
-        if current_block is not None:
-            current_block.to("cpu")
-            del current_block
-        self.blocks_loaded[block_idx] = None
-        gc.collect()
-        torch.cuda.empty_cache()
+        Args:
+            block_idx: The index of the block thats is being trained.
+            include_embedding: Whether to include the parameters for the input
+                embedding. This should be False if the embedding is frozen.
+        """
+        if not 0 <= block_idx < self.num_blocks:
+            raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
 
-    def save_checkpoint(self, path: str | os.PathLike):
-        for i in range(self.num_blocks):
-            self.save_block(i)
-        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
-        torch.save(self.input_embedding.state_dict(), embedding_path)
-        shutil.copytree(self.save_path.name, path)
+        if include_embedding:
+            yield from self.input_embedding.parameters()
+        yield from self.blocks[block_idx].parameters()
 
-    def load_checkpoint(self, path: str | os.PathLike):
-        for i in range(self.num_blocks):
-            self.unload_block(i)
-        shutil.copytree(path, self.save_path.name, dirs_exist_ok=True)
-        embedding_path = Path(self.save_path.name) / "input_embedding.pth"
-        self.input_embedding.load_state_dict(torch.load(embedding_path))
-
-    def to_device(self, device):
-        for i in range(self.num_blocks):
-            current_block = self.blocks_loaded[i]
-            if current_block is not None:
-                current_block.to(device)
+    def set_primary_device(self, device: torch.device):
+        self.primary_device = device
+        for block_idx in range(self.num_blocks):
+            if not self.is_mapped[block_idx]:
+                self.blocks[block_idx].to(device)
         self.input_embedding.to(device)
 
-    def loaded_parameters(self):
-        yield from self.input_embedding.parameters()
-        for i in range(self.num_blocks):
-            current_block = self.blocks_loaded[i]
-            if current_block is not None:
-                yield from current_block.parameters()
+    def set_loaded_block(self, block_idx: int):
+        if not 0 <= block_idx < self.num_blocks:
+            raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
+
+        for mapping_block_idx, block in enumerate(self.blocks):
+            if mapping_block_idx == block_idx:
+                continue
+            if self.is_mapped[mapping_block_idx]:
+                continue
+
+            assert isinstance(block, LlamaDiTBlockForCausalLM)
+            map_to_file(block, Path(self.save_path.name) / f"block_{mapping_block_idx}")
+            self.is_mapped[mapping_block_idx] = True
+
+        self.blocks[block_idx].to(self.primary_device)
+        self.is_mapped[block_idx] = False
 
     def embed_input_ids(self, input_ids: torch.Tensor):
         return F.rms_norm(
@@ -846,15 +845,72 @@ class LlamaDiTForCausalLM:
         )
         return likelihoods @ embeddings
 
-    def get_block_from_timestep(self, timestep: float) -> int:
+    def get_block_from_timestep(self, timestep: float | torch.Tensor) -> int:
+        """Select by log-noise time; exact boundaries use the lower-noise block."""
+        if isinstance(timestep, torch.Tensor):
+            timestep = timestep.float()
+            clean_positions = timestep == 0
+            noisy_positions = ~clean_positions
+            if clean_positions.all():
+                minimum_timestep = maximum_timestep = 0
+            else:
+                minimum_timestep = timestep.where(
+                    noisy_positions, float("infinity")
+                ).min()
+                minimum_timestep = minimum_timestep.item()
+                maximum_timestep = timestep.where(
+                    noisy_positions, float("-infinity")
+                ).max()
+                maximum_timestep = maximum_timestep.item()
+        else:
+            minimum_timestep = maximum_timestep = timestep
+
+        minimum_stdev = math.exp(minimum_timestep)
+        maximum_stdev = math.exp(maximum_timestep)
+
+        extended_stdev_boundaries = [0, *self.block_boundaries[1:-1], float("infinity")]
+
         matching_blocks = [
-            block_idx - 1
-            for block_idx, upper_bound in enumerate(self.block_boundaries)
-            if timestep <= math.log(upper_bound)
+            block_idx
+            for block_idx, (lower_bound, upper_bound) in enumerate(
+                pairwise(extended_stdev_boundaries)
+            )
+            if minimum_stdev >= lower_bound and maximum_stdev <= upper_bound
         ]
         if len(matching_blocks) == 0:
-            return self.num_blocks - 1
-        return max(0, matching_blocks[0])
+            raise ValueError(
+                f"No matching blocks! {minimum_stdev=}, {maximum_stdev=}, {extended_stdev_boundaries=}"
+            )
+        return matching_blocks[0]
 
-    def noise_boundaries(self, block_idx: int):
-        return self.block_boundaries[block_idx], self.block_boundaries[block_idx + 1]
+    def forward(
+        self,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        inputs_embeds: torch.Tensor,
+        timestep: torch.Tensor | None = None,
+        block_idx: int | None = None,
+    ):
+        if timestep is None and self.embed_timesteps:
+            raise ValueError("Must specify timestep when embed_timesteps is true")
+
+        if block_idx is None:
+            if timestep is None:
+                raise ValueError("Must specify timestep or block_idx")
+            block_idx = self.get_block_from_timestep(timestep)
+
+        if not 0 <= block_idx < self.num_blocks:
+            raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
+
+        self.set_loaded_block(block_idx)
+
+        target_block = self.blocks[block_idx]
+
+        timestep_embedding = {"timestep": timestep} if self.embed_timesteps else {}
+
+        return target_block(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            **timestep_embedding,
+        )
