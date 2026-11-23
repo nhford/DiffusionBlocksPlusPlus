@@ -69,15 +69,15 @@ class MemoryTracker:
         if value is not None:
             warnings.warn("Forgot to call reset() between measurements.")
 
-    def measure_mem_weights(self):
+    def measure_mem_weights(self, block_idx: int):
         self._assert_unused(self.usage_dict["weights"])
-        if all(block is None for block in self.model.blocks_loaded):
+        if all(block is None for block in self.model.blocks):
             warnings.warn(
                 "measure_mem_weights was called with no blocks loaded. This is probably incorrect."
             )
         self.usage_dict["weights"] = sum(
             param.numel() * param.element_size()
-            for param in self.model.loaded_parameters()
+            for param in self.model.block_parameters(block_idx, True)
         )
 
     def begin_forward(self):
@@ -97,11 +97,11 @@ class MemoryTracker:
             self._current_memory_used() - self.forward_initial_mem
         )
 
-    def measure_mem_grad(self):
+    def measure_mem_grad(self, block_idx: int):
         self._assert_unused(self.usage_dict["gradients"])
         self.usage_dict["gradients"] = sum(
             param.grad.numel() * param.grad.element_size()
-            for param in self.model.loaded_parameters()
+            for param in self.model.block_parameters(block_idx, True)
             if param.grad is not None
         )
         if self.usage_dict["gradients"] == 0:

@@ -65,19 +65,19 @@ def train_block(
     train_config: LlamaTrainConfig,
     model_config: LlamaDiTRunModelConfig,
 ):
-    for i in range(model.num_blocks):
-        model.unload_block(i)
-    model.load_block(block_idx)
-    current_block = model.blocks_loaded[block_idx]
-    assert current_block is not None
-    current_block.train()
-    model.input_embedding.train()
+    model.set_primary_device(device)
+    model.set_loaded_block(block_idx)
 
-    min_stdev, max_stdev = model.noise_boundaries(block_idx)
+    model.train()
 
-    model.to_device(device)
+    min_stdev, max_stdev = (
+        model.block_boundaries[block_idx],
+        model.block_boundaries[block_idx + 1],
+    )
 
-    optimizer = AdamW(model.loaded_parameters(), lr=train_config.learning_rate)
+    optimizer = AdamW(
+        model.block_parameters(block_idx, True), lr=train_config.learning_rate
+    )
 
     memory_tracker = MemoryTracker(model, optimizer, device)
 
@@ -88,7 +88,7 @@ def train_block(
         batch_size, sequence_length = batch["input_ids"].shape
 
         memory_tracker.reset()
-        memory_tracker.measure_mem_weights()
+        memory_tracker.measure_mem_weights(block_idx)
         memory_tracker.begin_forward()
 
         token_ids = batch["input_ids"].to(device)
@@ -110,19 +110,14 @@ def train_block(
             )
         )
 
-        outputs: CausalLMOutputWithPast = current_block(
+        outputs: CausalLMOutputWithPast = model(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            **(
-                {
-                    "timestep": build_timesteps(
-                        features, sigmas.log(), model_config.timestep_conditioning
-                    )
-                }
-                if model_config.embed_timesteps
-                else {}
+            timestep=build_timesteps(
+                features, sigmas.log(), model_config.timestep_conditioning
             ),
+            block_idx=block_idx,
         )
 
         memory_tracker.measure_mem_act()
@@ -135,7 +130,7 @@ def train_block(
         loss = (loss * labels_mask).sum() / labels_mask.sum()
         loss.backward()
 
-        memory_tracker.measure_mem_grad()
+        memory_tracker.measure_mem_grad(block_idx)
 
         optimizer.step()
 
@@ -251,8 +246,8 @@ def evaluate_model(
     model_config: LlamaDiTRunModelConfig,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
+    model.set_primary_device(device)
 
-    model.input_embedding.to(device)
     # We know the dataset has a length
     print(f"Evaluating model on {len(dataloader.dataset)} samples.")  # type: ignore[reportArgumentType]
 
@@ -294,39 +289,39 @@ def evaluate_model(
         position_ids = torch.cat([position_ids[:, :-1], position_ids[:, 1:]], dim=1)
         assert position_ids.shape == (batch_size, (sequence_length - 1) * 2)
 
-        def get_logits(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
+        @torch.no_grad
+        def get_logits(
+            noisy_embeddings: torch.Tensor,
+            timestep: float,
+            *,
+            clean_embeddings=clean_embeddings,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            sequence_length=sequence_length,
+        ) -> torch.Tensor:
             """Get the logit predictions for an embedding's denoised embedding."""
-            current_block_idx = model.get_block_from_timestep(timestep)
-
-            for block_idx in range(model.num_blocks):
-                if block_idx != current_block_idx:
-                    model.unload_block(block_idx)
-            model.load_block(current_block_idx)
-            current_block = model.blocks_loaded[current_block_idx]
-            assert current_block is not None
-            current_block.to(device)  # type: ignore https://github.com/huggingface/transformers/issues/38052
-            current_block.eval()
-            model.input_embedding.eval()
+            model.eval()
 
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
-            outputs: CausalLMOutputWithPast = current_block(
+            timestep_tensor = build_timesteps(
+                inputs_embeds,
+                timestep,
+                model_config.timestep_conditioning,
+            )
+
+            outputs: CausalLMOutputWithPast = model(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                **{
-                    "timestep": build_timesteps(
-                        inputs_embeds, timestep, model_config.timestep_conditioning
-                    )
-                }
-                if model_config.embed_timesteps
-                else {},
+                timestep=timestep_tensor,
             )
 
             logits = outputs.logits
             assert logits is not None
             return logits[:, sequence_length - 1 :, :]
 
+        @torch.no_grad
         def ODE(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
             """Get the change in hidden embedding with respect to timestep"""
             noisy_logits = get_logits(noisy_embeddings, timestep)
@@ -359,8 +354,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="deploy_ar_dit_simple.py")
 
     parser.add_argument("action")
-    parser.add_argument("-i", "--from-ckpt")
-    parser.add_argument("-o", "--to-ckpt")
+    parser.add_argument("-i", "--load-ckpt")
+    parser.add_argument("-o", "--save-ckpt")
     parser.add_argument("-l", "--log-path")
     parser.add_argument("-c", "--config")
 
@@ -377,10 +372,10 @@ if __name__ == "__main__":
     config_save_path = default_output_path / "config.yaml"
 
     checkpoint_save_path = default_output_path / "checkpoint"
-    if args.to_ckpt is not None:
-        checkpoint_save_path = Path(args.to_ckpt)
+    if args.save_ckpt is not None:
+        checkpoint_save_path = Path(args.save_ckpt)
 
-    checkpoint_load_path = args.from_ckpt
+    checkpoint_load_path = args.load_ckpt
 
     metrics_save_path = default_output_path / "metrics.csv"
     if args.log_path is not None:
@@ -416,9 +411,10 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = LlamaDiTForCausalLM(config)
-    if checkpoint_load_path is not None:
-        model.load_checkpoint(checkpoint_load_path)
+    if checkpoint_load_path is None:
+        model = LlamaDiTForCausalLM(config)
+    else:
+        model = LlamaDiTForCausalLM.from_pretrained(checkpoint_load_path)
 
     if action == "train":
         if run_config.train_config is None:
@@ -432,7 +428,7 @@ if __name__ == "__main__":
             model_config=run_config.model_config,
         )
 
-        model.save_checkpoint(checkpoint_save_path)
+        model.save_pretrained(checkpoint_save_path, max_shard_size="1GB")
 
         Path(metrics_save_path).parent.mkdir(parents=True, exist_ok=True)
         pandas.DataFrame(results_dict).to_csv(metrics_save_path)
@@ -442,6 +438,7 @@ if __name__ == "__main__":
     if action == "evaluate":
         if run_config.test_config is None:
             raise ValueError("test_config must not be none when testing")
+
         evaluate_model(
             model=model,
             dataloader=test_dataloader,
