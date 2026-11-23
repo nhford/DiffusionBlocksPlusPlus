@@ -329,7 +329,6 @@ def evaluate_model(
             """Get the change in hidden embedding with respect to timestep"""
             noisy_logits = get_logits(noisy_embeddings, timestep)
             expected = model.embed_output_logits(noisy_logits)
-            # Our model is that the Gaussians scale at x=e^t, so the time derivative dx/dt is x=e^t.
             return (noisy_embeddings - expected) / math.exp(timestep)
 
         noise_levels = noise_schedule.get_discrete_stdevs(test_config.eval_num_steps)
@@ -393,7 +392,7 @@ if __name__ == "__main__":
 
     train_dataloader, test_dataloader = load_data(run_config.data_config)
 
-    noise_schedule = NoiseLevelDistribution(gamma=0.1)
+    noise_schedule = NoiseLevelDistribution()
 
     # See Appendix E.4 in the Sakana.ai paper
     # TODO: Generate this in an organized way from model_config
