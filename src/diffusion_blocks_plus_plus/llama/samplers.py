@@ -1,4 +1,5 @@
 import itertools
+import math
 from collections.abc import Callable, Sequence
 
 import torch
@@ -26,16 +27,16 @@ def sample(
         desc="Denoise Step",
         leave=False,
     ):
-        dt = next_timestep - timestep
+        d_stdev = math.exp(next_timestep) - math.exp(timestep)
         slope = ode(embeddings, timestep)
         if sampler == "euler":
-            embeddings += slope * dt
+            embeddings += slope * d_stdev
         elif sampler == "heun":
-            predictor = embeddings + slope * dt
+            predictor = embeddings + slope * d_stdev
             endpoint_slope = ode(predictor, next_timestep)
-            embeddings += (slope + endpoint_slope) * (dt / 2)
+            embeddings += (slope + endpoint_slope) * (d_stdev / 2)
         else:  # midpoint
-            midpoint = embeddings + slope * (dt / 2)
-            midpoint_slope = ode(midpoint, timestep + dt / 2)
-            embeddings += midpoint_slope * dt
+            midpoint = embeddings + slope * (d_stdev / 2)
+            midpoint_slope = ode(midpoint, timestep + d_stdev / 2)
+            embeddings += midpoint_slope * d_stdev
     return embeddings
