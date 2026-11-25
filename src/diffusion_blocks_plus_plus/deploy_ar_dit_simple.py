@@ -62,7 +62,6 @@ def train_block(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
-    model_config: LlamaDiTConfig,
 ):
     model.set_primary_device(device)
     model.set_loaded_block(block_idx)
@@ -114,7 +113,7 @@ def train_block(
             attention_mask=attention,
             position_ids=position_ids,
             timestep=build_timesteps(
-                features, sigmas.log(), model_config.timestep_conditioning
+                features, sigmas.log(), model.timestep_conditioning
             ),
             block_idx=block_idx,
         )
@@ -123,7 +122,7 @@ def train_block(
 
         logits = outputs.logits
         assert isinstance(logits, torch.Tensor)
-        assert logits.shape == (batch_size, sequence_length * 2 - 2, config.vocab_size)
+        assert logits.shape == (batch_size, sequence_length * 2 - 2, model.vocab_size)
 
         loss = F.cross_entropy(logits.permute(0, 2, 1), labels, reduction="none")
         loss = (loss * labels_mask).sum() / labels_mask.sum()
@@ -150,7 +149,6 @@ def train_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
-    model_config: LlamaDiTConfig,
 ) -> list[dict]:
     print(
         f"Training model on {len(dataloader.dataset)} samples for {train_config.num_epochs} epochs."  # type: ignore[reportArgumentType]
@@ -169,7 +167,6 @@ def train_model(
                 device=device,
                 noise_schedule=noise_schedule,
                 train_config=train_config,
-                model_config=model_config,
             )
             results += [{"block_idx": block_idx, **row} for row in block_results]
 
@@ -242,7 +239,6 @@ def evaluate_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     test_config: LlamaTestConfig,
-    model_config: LlamaDiTConfig,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
     model.set_primary_device(device)
@@ -306,7 +302,7 @@ def evaluate_model(
             timestep_tensor = build_timesteps(
                 inputs_embeds,
                 timestep,
-                model_config.timestep_conditioning,
+                model.timestep_conditioning,
             )
 
             outputs: CausalLMOutputWithPast = model(
@@ -391,12 +387,10 @@ if __name__ == "__main__":
 
     noise_schedule = NoiseLevelDistribution()
 
-    config = run_config.model_config
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if checkpoint_load_path is None:
-        model = LlamaDiTForCausalLM(config)
+        model = LlamaDiTForCausalLM(run_config.model_config)
     else:
         model = LlamaDiTForCausalLM.from_pretrained(checkpoint_load_path)
 
@@ -409,7 +403,6 @@ if __name__ == "__main__":
             device=device,
             noise_schedule=noise_schedule,
             train_config=run_config.train_config,
-            model_config=run_config.model_config,
         )
 
         model.save_pretrained(checkpoint_save_path, max_shard_size="1GB")
@@ -429,5 +422,4 @@ if __name__ == "__main__":
             device=device,
             noise_schedule=noise_schedule,
             test_config=run_config.test_config,
-            model_config=run_config.model_config,
         )

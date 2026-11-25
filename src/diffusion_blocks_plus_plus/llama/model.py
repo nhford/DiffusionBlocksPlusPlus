@@ -779,6 +779,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
             self.vocab_size, self.hidden_size, self.padding_idx
         )
         self.embed_timesteps = config.use_timestep_embedding
+        self.timestep_conditioning = config.timestep_conditioning
 
         self.blocks = nn.ModuleList()
         for block_idx in range(self.num_blocks):
