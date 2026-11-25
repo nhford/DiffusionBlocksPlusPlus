@@ -1,8 +1,8 @@
 from dataclasses import asdict, dataclass, field
 from os import PathLike
 
+import dacite
 import yaml
-from dacite import from_dict
 
 
 @dataclass
@@ -74,7 +74,9 @@ class LlamaDiTRunConfig:
 
 def load_config(file: str | PathLike) -> LlamaDiTRunConfig:
     with open(file, "r") as f:
-        config = from_dict(LlamaDiTRunConfig, yaml.safe_load(f))
+        config = dacite.from_dict(
+            LlamaDiTRunConfig, yaml.safe_load(f), config=dacite.Config(strict=True)
+        )
     return config
 
 
