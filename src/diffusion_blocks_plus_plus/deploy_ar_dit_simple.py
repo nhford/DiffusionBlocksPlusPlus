@@ -6,11 +6,9 @@ from pathlib import Path
 import pandas
 import torch
 import torch.nn.functional as F
-from datasets import dataset_dict, load_dataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .llama.attention_masks import (
@@ -18,7 +16,6 @@ from .llama.attention_masks import (
     mask_to_pos,
 )
 from .llama.config import (
-    LlamaDataConfig,
     LlamaDiTRunConfig,
     LlamaTestConfig,
     LlamaTrainConfig,
@@ -26,9 +23,8 @@ from .llama.config import (
     save_config,
 )
 from .llama.data import (
-    predictable_dataset,
+    load_data,
     prepare_training_batch,
-    trivial_random_dataset,
 )
 from .llama.model import LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
@@ -172,55 +168,6 @@ def train_model(
             results += [{"block_idx": block_idx, **row} for row in block_results]
 
     return results
-
-
-def load_data(data_config: LlamaDataConfig):
-    tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer_config.name)
-    assert isinstance(tokenizer, LlamaTokenizerFast)
-    tokenizer.padding_side = data_config.tokenizer_config.padding_side
-    tokenizer.add_bos_token = data_config.tokenizer_config.add_bos_token
-    tokenizer.add_eos_token = data_config.tokenizer_config.add_eos_token
-
-    def tokenize_function(examples):
-        result = tokenizer(
-            text=examples["text"],
-            padding="max_length",
-            truncation=True,
-            max_length=data_config.sequence_length,
-        )
-        return result
-
-    def load_split(split_name: str, num_examples: int, batch_size: int) -> DataLoader:
-        if data_config.dataset_name == "randb":
-            dataset = trivial_random_dataset(num_examples, data_config.sequence_length)
-        elif data_config.dataset_name == "randb_block":
-            dataset = predictable_dataset(num_examples, data_config.sequence_length)
-        else:
-            dataset = load_dataset(
-                path=data_config.dataset_name,
-                split=f"{split_name}[:{num_examples}]",
-            ).map(
-                function=tokenize_function,
-                batched=True,
-                remove_columns=["text"],
-            )
-
-        dataset = dataset.with_format("torch")
-        assert isinstance(dataset, dataset_dict.Dataset)
-
-        return DataLoader(
-            dataset=dataset,  # type: ignore The dataset is simple enough to be compatible
-            batch_size=batch_size,
-        )
-
-    train_dataloader = load_split(
-        "train", data_config.num_examples_train, data_config.batch_size_train
-    )
-    test_dataloader = load_split(
-        "validation", data_config.num_examples_test, data_config.batch_size_test
-    )
-
-    return train_dataloader, test_dataloader
 
 
 @torch.no_grad

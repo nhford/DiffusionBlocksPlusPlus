@@ -1,10 +1,10 @@
-import os
-
 import datasets
-import lightning as L
 import torch
-from datasets import load_dataset
+from datasets import dataset_dict, load_dataset
 from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, LlamaTokenizerFast
+
+from diffusion_blocks_plus_plus.llama.config import LlamaDataConfig
 
 from .attention_masks import build_train_attention_mask
 from .noise_level_manager import NoiseLevelDistribution
@@ -35,88 +35,53 @@ def predictable_dataset(num_samples, sequence_len):
     )
 
 
-class TextDataModule(L.LightningDataModule):
-    data_name = None
-    dataset_kwargs = {}
+def load_data(data_config: LlamaDataConfig):
+    tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer_config.name)
+    assert isinstance(tokenizer, LlamaTokenizerFast)
+    tokenizer.padding_side = data_config.tokenizer_config.padding_side
+    tokenizer.add_bos_token = data_config.tokenizer_config.add_bos_token
+    tokenizer.add_eos_token = data_config.tokenizer_config.add_eos_token
 
-    def __init__(
-        self,
-        batch_size: int = 256,
-        eval_batch_size: int | None = None,
-        num_workers: int | None = None,
-    ):
-        super().__init__()
-        self.batch_size = batch_size
-        self.eval_batch_size = eval_batch_size or batch_size
-        self.num_workers = num_workers if num_workers is not None else os.cpu_count()
-        self.collate_fn = None
-        self.datasets = {}
-        self.train_key = "train"
-        self.val_key = "validation"
-        self.test_key = "test"
+    def tokenize_function(examples):
+        result = tokenizer(
+            text=examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=data_config.sequence_length,
+        )
+        return result
 
-    def prepare_data(self):
-        load_dataset(self.data_name, num_proc=os.cpu_count() // 2)
+    def load_split(split_name: str, num_examples: int, batch_size: int) -> DataLoader:
+        if data_config.dataset_name == "randb":
+            dataset = trivial_random_dataset(num_examples, data_config.sequence_length)
+        elif data_config.dataset_name == "randb_block":
+            dataset = predictable_dataset(num_examples, data_config.sequence_length)
+        else:
+            dataset = load_dataset(
+                path=data_config.dataset_name,
+                split=f"{split_name}[:{num_examples}]",
+            ).map(
+                function=tokenize_function,
+                batched=True,
+                remove_columns=["text"],
+            )
 
-    def setup(self, stage=None):
-        data = load_dataset(self.data_name)
-        train_data = data[self.train_key]
-        self.datasets["train"] = train_data
-        if self.val_key is not None:
-            val_data = data[self.val_key]
-            self.datasets["val"] = val_data
-            self.val_dataloader = self._val_dataloader
-        if self.test_key is not None:
-            test_data = data[self.test_key]
-            self.datasets["test"] = test_data
-            self.test_dataloader = self._test_dataloader
+        dataset = dataset.with_format("torch")
+        assert isinstance(dataset, dataset_dict.Dataset)
 
-    def train_dataloader(self):
         return DataLoader(
-            self.datasets["train"],
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            shuffle=True,
+            dataset=dataset,  # type: ignore The dataset is simple enough to be compatible
+            batch_size=batch_size,
         )
 
-    def _val_dataloader(self):
-        return DataLoader(
-            self.datasets["val"],
-            batch_size=self.eval_batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            shuffle=False,
-        )
+    train_dataloader = load_split(
+        "train", data_config.num_examples_train, data_config.batch_size_train
+    )
+    test_dataloader = load_split(
+        "validation", data_config.num_examples_test, data_config.batch_size_test
+    )
 
-    def _test_dataloader(self):
-        return DataLoader(
-            self.datasets["test"],
-            batch_size=self.eval_batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            shuffle=False,
-        )
-
-
-class TinyStoriesTextDataModule(TextDataModule):
-    data_name = "roneneldan/TinyStories"
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.train_key = "train"
-        self.test_key = "validation"
-        self.val_key = "validation"
-
-
-def load_data(args):
-    if args.data_name == "tinystories":
-        return TinyStoriesTextDataModule()
-    else:
-        raise ValueError(f"Invalid data name: {args.data_name}")
+    return train_dataloader, test_dataloader
 
 
 def prepare_training_batch(
