@@ -29,7 +29,7 @@ from .llama.data import (
     predictable_dataset,
     prepare_training_batch,
 )
-from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
+from .llama.model import LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
 from .llama.samplers import sample
 from .llama.vram_tracker import MemoryTracker
