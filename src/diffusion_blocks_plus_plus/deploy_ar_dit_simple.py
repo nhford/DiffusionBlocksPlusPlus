@@ -28,6 +28,7 @@ from .llama.config import (
 from .llama.data import (
     predictable_dataset,
     prepare_training_batch,
+    trivial_random_dataset,
 )
 from .llama.model import LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
@@ -174,59 +175,49 @@ def train_model(
 
 
 def load_data(data_config: LlamaDataConfig):
-    if data_config.dataset_name == "randb":
-        train_dataset = predictable_dataset(
-            data_config.num_examples_train,
-            data_config.sequence_length,
-        )
-        test_dataset = predictable_dataset(
-            data_config.num_examples_test,
-            data_config.sequence_length,
-        )
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer_config.name)
-        assert isinstance(tokenizer, LlamaTokenizerFast)
-        tokenizer.padding_side = data_config.tokenizer_config.padding_side
-        tokenizer.add_bos_token = data_config.tokenizer_config.add_bos_token
-        tokenizer.add_eos_token = data_config.tokenizer_config.add_eos_token
+    tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer_config.name)
+    assert isinstance(tokenizer, LlamaTokenizerFast)
+    tokenizer.padding_side = data_config.tokenizer_config.padding_side
+    tokenizer.add_bos_token = data_config.tokenizer_config.add_bos_token
+    tokenizer.add_eos_token = data_config.tokenizer_config.add_eos_token
 
-        def tokenize_function(examples):
-            result = tokenizer(
-                examples["text"],
-                padding="max_length",
-                truncation=True,
-                max_length=data_config.sequence_length,
+    def tokenize_function(examples):
+        result = tokenizer(
+            text=examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=data_config.sequence_length,
+        )
+        return result
+
+    def load_split(split_name: str, num_examples: int, batch_size: int) -> DataLoader:
+        if data_config.dataset_name == "randb":
+            dataset = trivial_random_dataset(num_examples, data_config.sequence_length)
+        elif data_config.dataset_name == "randb_block":
+            dataset = predictable_dataset(num_examples, data_config.sequence_length)
+        else:
+            dataset = load_dataset(
+                path=data_config.dataset_name,
+                split=f"{split_name}[:{num_examples}]",
+            ).map(
+                function=tokenize_function,
+                batched=True,
+                remove_columns=["text"],
             )
-            return result
 
-        train_split = f"train[:{data_config.num_examples_train}]"
-        train_dataset = load_dataset(data_config.dataset_name, split=train_split)
-        train_dataset = train_dataset.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=["text"],
+        dataset = dataset.with_format("torch")
+        assert isinstance(dataset, dataset_dict.Dataset)
+
+        return DataLoader(
+            dataset=dataset,  # type: ignore The dataset is simple enough to be compatible
+            batch_size=batch_size,
         )
 
-        test_split = f"validation[:{data_config.num_examples_test}]"
-        test_dataset = load_dataset(data_config.dataset_name, split=test_split)
-        test_dataset = test_dataset.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=["text"],
-        )
-
-    train_dataset = train_dataset.with_format("torch")
-    test_dataset = test_dataset.with_format("torch")
-    assert isinstance(train_dataset, dataset_dict.Dataset)
-    assert isinstance(test_dataset, dataset_dict.Dataset)
-
-    train_dataloader = DataLoader(
-        train_dataset,  # type: ignore The dataset is simple enough to be compatible
-        batch_size=data_config.batch_size_train,
+    train_dataloader = load_split(
+        "train", data_config.num_examples_train, data_config.batch_size_train
     )
-    test_dataloader = DataLoader(
-        test_dataset,  # type: ignore The dataset is simple enough to be compatible
-        batch_size=data_config.batch_size_test,
+    test_dataloader = load_split(
+        "validation", data_config.num_examples_test, data_config.batch_size_test
     )
 
     return train_dataloader, test_dataloader
