@@ -162,15 +162,16 @@ class TimestepEmbedder(nn.Module):
 
 
 class LlamaDiTConfig(LlamaConfig):
+    # Defaults follow Appendix E.4 in the Sakana.ai paper
     cond_hidden_size: int  # hidden dimension size for both timestep embedder and adarms
 
     def __init__(
         self,
         vocab_size=32000,
-        hidden_size=4096,
-        intermediate_size=11008,
-        num_hidden_layers=32,
-        num_attention_heads=32,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_hidden_layers=12,
+        num_attention_heads=12,
         num_key_value_heads=None,
         hidden_act="silu",
         max_position_embeddings=2048,
@@ -190,9 +191,10 @@ class LlamaDiTConfig(LlamaConfig):
         head_dim=None,
         cond_hidden_size: int | None = None,
         use_timestep_embedding=True,
-        num_blocks=2,
+        num_blocks=3,
         block_boundaries: list[float] | None = None,
         apply_freq_fix=True,
+        timestep_conditioning="uniform",
         **kwargs,
     ):
         super().__init__(
@@ -237,6 +239,7 @@ class LlamaDiTConfig(LlamaConfig):
         else:
             self.block_boundaries = block_boundaries
         self.apply_freq_fix = apply_freq_fix
+        self.timestep_conditioning = timestep_conditioning
 
 
 class LlamaDiTDecoderLayer(GradientCheckpointingLayer):

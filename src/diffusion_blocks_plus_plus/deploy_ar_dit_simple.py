@@ -20,7 +20,6 @@ from .llama.attention_masks import (
 from .llama.config import (
     LlamaDataConfig,
     LlamaDiTRunConfig,
-    LlamaDiTRunModelConfig,
     LlamaTestConfig,
     LlamaTrainConfig,
     load_config,
@@ -63,7 +62,7 @@ def train_block(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
-    model_config: LlamaDiTRunModelConfig,
+    model_config: LlamaDiTConfig,
 ):
     model.set_primary_device(device)
     model.set_loaded_block(block_idx)
@@ -151,7 +150,7 @@ def train_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
-    model_config: LlamaDiTRunModelConfig,
+    model_config: LlamaDiTConfig,
 ) -> list[dict]:
     print(
         f"Training model on {len(dataloader.dataset)} samples for {train_config.num_epochs} epochs."  # type: ignore[reportArgumentType]
@@ -243,7 +242,7 @@ def evaluate_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     test_config: LlamaTestConfig,
-    model_config: LlamaDiTRunModelConfig,
+    model_config: LlamaDiTConfig,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
     model.set_primary_device(device)
@@ -392,22 +391,7 @@ if __name__ == "__main__":
 
     noise_schedule = NoiseLevelDistribution()
 
-    # See Appendix E.4 in the Sakana.ai paper
-    # TODO: Generate this in an organized way from model_config
-    config = LlamaDiTConfig(
-        vocab_size=32000,
-        num_hidden_layers=run_config.model_config.num_hidden_layers,
-        hidden_size=run_config.model_config.hidden_size,
-        num_attention_heads=12,
-        intermediate_size=3072,
-        num_blocks=run_config.model_config.num_blocks,
-        use_timestep_embedding=run_config.model_config.embed_timesteps,
-        timestep_conditioning=run_config.model_config.timestep_conditioning,
-        block_boundaries=noise_schedule.get_block_stdevs(
-            run_config.model_config.num_blocks
-        ),
-        apply_freq_fix=run_config.model_config.apply_freq_fix,
-    )
+    config = run_config.model_config
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
