@@ -27,6 +27,8 @@ def sample(
         desc="Denoise Step",
         leave=False,
     ):
+        # Note that we do this because the original paper uses the EDM Karras
+        # formulation.
         d_stdev = math.exp(next_timestep) - math.exp(timestep)
         slope = ode(embeddings, timestep)
         if sampler == "euler":
