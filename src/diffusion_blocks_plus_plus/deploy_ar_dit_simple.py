@@ -23,6 +23,7 @@ from .llama.config import (
     save_config,
 )
 from .llama.data import (
+    build_timesteps,
     load_data,
     prepare_training_batch,
 )
@@ -30,26 +31,6 @@ from .llama.model import LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
 from .llama.samplers import sample
 from .llama.vram_tracker import MemoryTracker
-
-
-def build_timesteps(
-    inputs_embeds: torch.Tensor, timestep: torch.Tensor | float, mode: str
-) -> torch.Tensor:
-    """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
-    batch_size, sequence_length = inputs_embeds.shape[:2]
-    timesteps = (
-        torch.as_tensor(
-            timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
-        )
-        .reshape(-1, 1)
-        .expand(batch_size, 1)
-    )
-    if mode == "uniform":
-        return timesteps
-    if mode == "per-token":
-        clean = inputs_embeds.new_zeros((batch_size, sequence_length // 2))
-        return torch.cat([clean, timesteps.expand_as(clean)], dim=1)
-    raise ValueError(f"Unknown timestep conditioning mode: {mode}")
 
 
 def train_block(

@@ -35,6 +35,26 @@ def predictable_dataset(num_samples, sequence_len):
     )
 
 
+def build_timesteps(
+    inputs_embeds: torch.Tensor, timestep: torch.Tensor | float, mode: str
+) -> torch.Tensor:
+    """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
+    batch_size, sequence_length = inputs_embeds.shape[:2]
+    timesteps = (
+        torch.as_tensor(
+            timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
+        )
+        .reshape(-1, 1)
+        .expand(batch_size, 1)
+    )
+    if mode == "uniform":
+        return timesteps
+    if mode == "per-token":
+        clean = inputs_embeds.new_zeros((batch_size, sequence_length // 2))
+        return torch.cat([clean, timesteps.expand_as(clean)], dim=1)
+    raise ValueError(f"Unknown timestep conditioning mode: {mode}")
+
+
 def load_data(data_config: LlamaDataConfig):
     tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer_config.name)
     assert isinstance(tokenizer, LlamaTokenizerFast)
