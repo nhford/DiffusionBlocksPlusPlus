@@ -219,6 +219,9 @@ def evaluate_model(
             """Get the logit predictions for an embedding's denoised embedding."""
             model.eval()
 
+            # Normalize inputs
+            noisy_embeddings = noisy_embeddings / math.sqrt(math.exp(timestep) ** 2 + 1)
+
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
             timestep_tensor = build_timesteps(
@@ -243,8 +246,7 @@ def evaluate_model(
             """Get the change in hidden embedding with respect to timestep"""
             noisy_logits = get_logits(noisy_embeddings, timestep)
             expected = model.embed_output_logits(noisy_logits)
-            # Our model is that the Gaussians scale at x=e^t, so the time derivative dx/dt is x=e^t.
-            return noisy_embeddings - expected
+            return (noisy_embeddings - expected) / math.exp(timestep)
 
         noise_levels = noise_schedule.get_discrete_stdevs(test_config.eval_num_steps)
 

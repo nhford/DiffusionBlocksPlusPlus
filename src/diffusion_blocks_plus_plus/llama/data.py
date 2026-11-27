@@ -172,6 +172,9 @@ def prepare_training_batch(
     noise = torch.randn_like(noisy_embeddings)
     noisy_embeddings += stdevs[:, None, None] * noise
 
+    # Normalize input embeddings
+    noisy_embeddings /= torch.sqrt(stdevs[:, None, None] ** 2 + 1)
+
     features = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
     attention = build_bd3lm_train_attention_mask(token_mask, bd3_lm_block_size)

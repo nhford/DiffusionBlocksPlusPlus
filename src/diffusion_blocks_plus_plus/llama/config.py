@@ -69,7 +69,9 @@ def load_config(file: str | PathLike) -> LlamaDiTRunConfig:
         config = from_dict(
             LlamaDiTRunConfig,
             yaml.safe_load(f),
-            config=Config(type_hooks={LlamaDiTConfig: LlamaDiTConfig.from_dict}),
+            config=Config(
+                type_hooks={LlamaDiTConfig: LlamaDiTConfig.from_dict}, strict=True
+            ),
         )
     return config
 
