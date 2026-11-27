@@ -1,8 +1,11 @@
+import json
 from dataclasses import asdict, dataclass, field
 from os import PathLike
 
 import yaml
-from dacite import from_dict
+from dacite import Config, from_dict
+
+from .model import LlamaDiTConfig
 
 
 @dataclass
@@ -52,33 +55,29 @@ class LlamaTestConfig:
 
 
 @dataclass
-class LlamaDiTRunModelConfig:
-    """The subset of LlamaDiT parameters that can be configured from yaml"""
-
-    hidden_size: int = 768
-    num_hidden_layers: int = 12
-    num_blocks: int = 3
-    embed_timesteps: bool = True
-    timestep_conditioning: str = "uniform"
-    apply_freq_fix: bool = True
-
-
-@dataclass
 class LlamaDiTRunConfig:
     """Configuration for Llama"""
 
     data_config: LlamaDataConfig = field(default_factory=LlamaDataConfig)
-    model_config: LlamaDiTRunModelConfig = field(default_factory=LlamaDiTRunModelConfig)
+    model_config: LlamaDiTConfig = field(default_factory=LlamaDiTConfig)
     train_config: LlamaTrainConfig | None = field(default_factory=LlamaTrainConfig)
     test_config: LlamaTestConfig | None = field(default_factory=LlamaTestConfig)
 
 
 def load_config(file: str | PathLike) -> LlamaDiTRunConfig:
     with open(file, "r") as f:
-        config = from_dict(LlamaDiTRunConfig, yaml.safe_load(f))
+        config = from_dict(
+            LlamaDiTRunConfig,
+            yaml.safe_load(f),
+            config=Config(type_hooks={LlamaDiTConfig: LlamaDiTConfig.from_dict}),
+        )
     return config
 
 
 def save_config(file: str | PathLike, config: LlamaDiTRunConfig) -> None:
     with open(file, "w") as f:
-        yaml.safe_dump(asdict(config), f)
+        data = asdict(config)
+        data["model_config"] = json.loads(
+            config.model_config.to_json_string(use_diff=True)
+        )
+        yaml.safe_dump(data, f)
