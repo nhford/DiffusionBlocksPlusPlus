@@ -37,6 +37,17 @@ class LlamaDataConfig:
 
 
 @dataclass
+class NoiseLevelConfig:
+    """Configuration for the noise level distribution"""
+
+    p_mean: float = -1.2
+    p_std: float = 1.2
+    gamma: float = 0.05
+    stdev_min: float = 0.002
+    stdev_max: float = 80.0
+
+
+@dataclass
 class LlamaTrainConfig:
     """Configuration for Training Run"""
 
@@ -61,6 +72,7 @@ class LlamaDiTRunConfig:
 
     data_config: LlamaDataConfig = field(default_factory=LlamaDataConfig)
     model_config: LlamaDiTConfig = field(default_factory=LlamaDiTConfig)
+    noise_config: NoiseLevelConfig = field(default_factory=NoiseLevelConfig)
     train_config: LlamaTrainConfig | None = field(default_factory=LlamaTrainConfig)
     test_config: LlamaTestConfig | None = field(default_factory=LlamaTestConfig)
 

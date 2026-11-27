@@ -364,11 +364,16 @@ if __name__ == "__main__":
 
     train_dataloader, test_dataloader = load_data(run_config.data_config)
 
-    noise_schedule = NoiseLevelDistribution()
+    noise_schedule = NoiseLevelDistribution(**asdict(run_config.noise_config))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if checkpoint_load_path is None:
+        # Block boundaries must follow the configured noise distribution.
+        run_config.model_config.block_boundaries = [
+            float(b)
+            for b in noise_schedule.get_block_stdevs(run_config.model_config.num_blocks)
+        ]
         model = LlamaDiTForCausalLM(run_config.model_config)
     else:
         model = LlamaDiTForCausalLM.from_pretrained(checkpoint_load_path)
