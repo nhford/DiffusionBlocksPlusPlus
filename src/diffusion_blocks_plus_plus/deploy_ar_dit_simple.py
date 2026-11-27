@@ -127,7 +127,7 @@ def train_block(
                     f"{prefix}/loss": row["loss"],
                     f"{prefix}/lr": current_lr,
                     **{
-                        f"{prefix}/{k}": v
+                        f"vmem/{prefix}/{k}": v
                         for k, v in row.items()
                         if k.startswith("mem_")
                     },
