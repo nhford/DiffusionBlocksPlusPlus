@@ -10,7 +10,7 @@ I = float("-inf")
 
 
 @pytest.mark.parametrize(
-    ("clean_mask,clean_positions,noisy_mask,noisy_positions,expected"),
+    ("clean_mask,clean_groupids,noisy_mask,noisy_groupids,expected"),
     [(torch.tensor([[1]]),
       torch.tensor([[0]]),
       torch.tensor([[1]]),
@@ -28,16 +28,16 @@ I = float("-inf")
 )  # fmt: skip
 def test_build_diffusion_attention_mask(
     clean_mask: torch.Tensor,
-    clean_positions: torch.Tensor,
+    clean_groupids: torch.Tensor,
     noisy_mask: torch.Tensor,
-    noisy_positions: torch.Tensor,
+    noisy_groupids: torch.Tensor,
     expected: torch.Tensor,
 ):
     actual = build_diffusion_attention_mask(
         clean_mask,
-        clean_positions,
+        clean_groupids,
         noisy_mask,
-        noisy_positions,
+        noisy_groupids,
     )
     torch.testing.assert_close(actual, expected)
 

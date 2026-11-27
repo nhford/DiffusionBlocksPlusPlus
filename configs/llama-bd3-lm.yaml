@@ -1,0 +1,14 @@
+data_config:
+  dataset_name: randb
+  sequence_length: 4
+  num_examples_train: 10000
+  batch_size_train: 32
+  num_examples_test: 1000
+  batch_size_test: 32
+model_config:
+  num_hidden_layers: 48
+  num_blocks: 4
+train_config:
+  bd3_lm_block_size: 16
+test_config:
+  bd3_lm_block_size: 16

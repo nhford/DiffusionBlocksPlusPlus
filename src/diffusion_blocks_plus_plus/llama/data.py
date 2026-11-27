@@ -6,7 +6,10 @@ from transformers import AutoTokenizer, LlamaTokenizerFast
 
 from diffusion_blocks_plus_plus.llama.config import LlamaDataConfig
 
-from .attention_masks import build_train_attention_mask
+from .attention_masks import (
+    build_bd3lm_train_attention_mask,
+    build_train_attention_mask,
+)
 from .noise_level_manager import NoiseLevelDistribution
 
 
@@ -110,6 +113,7 @@ def prepare_training_batch(
     token_mask: torch.Tensor,
     block_min_stdev: float,
     block_max_stdev: float,
+    bd3_lm_block_size: int,
     distribution: NoiseLevelDistribution,
 ):
     """Prepare the context needed for a single training step of diffusion
@@ -170,7 +174,7 @@ def prepare_training_batch(
 
     features = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
-    attention = build_train_attention_mask(token_mask)
+    attention = build_bd3lm_train_attention_mask(token_mask, bd3_lm_block_size)
 
     position_ids = torch.cat(
         [
