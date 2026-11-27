@@ -42,7 +42,7 @@ class NoiseLevelConfig:
 
     p_mean: float = -1.2
     p_std: float = 1.2
-    gamma: float = 0.05
+    gamma: float = 0.1
     stdev_min: float = 0.002
     stdev_max: float = 80.0
 
@@ -51,9 +51,9 @@ class NoiseLevelConfig:
 class LlamaTrainConfig:
     """Configuration for Training Run"""
 
-    learning_rate: float = 0.001
+    learning_rate: float = 3e-4
     warmup_steps: int = 100
-    num_epochs: int = 1
+    num_epochs: int = 10
     bd3_lm_block_size: int = 1
 
 
@@ -61,7 +61,7 @@ class LlamaTrainConfig:
 class LlamaTestConfig:
     """Configuration for Test Run"""
 
-    eval_num_steps: int = 10
+    eval_num_steps: int = 4
     sampler: str = "euler"
     bd3_lm_block_size: int = 1
 
