@@ -1,0 +1,10 @@
+data_config:
+  sequence_length: 128
+  num_examples_train: 10
+  batch_size_train: 2
+  num_examples_test: 10
+  batch_size_test: 2
+model_config:
+  num_hidden_layers: 96
+  num_blocks: 8
+

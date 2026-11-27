@@ -6,11 +6,9 @@ from pathlib import Path
 import pandas
 import torch
 import torch.nn.functional as F
-from datasets import dataset_dict, load_dataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoTokenizer, LlamaTokenizerFast
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .llama.attention_masks import (
@@ -18,42 +16,21 @@ from .llama.attention_masks import (
     mask_to_pos,
 )
 from .llama.config import (
-    LlamaDataConfig,
     LlamaDiTRunConfig,
-    LlamaDiTRunModelConfig,
     LlamaTestConfig,
     LlamaTrainConfig,
     load_config,
     save_config,
 )
 from .llama.data import (
-    predictable_dataset,
+    build_timesteps,
+    load_data,
     prepare_training_batch,
 )
-from .llama.model import LlamaDiTConfig, LlamaDiTForCausalLM
+from .llama.model import LlamaDiTForCausalLM
 from .llama.noise_level_manager import NoiseLevelDistribution
 from .llama.samplers import sample
 from .llama.vram_tracker import MemoryTracker
-
-
-def build_timesteps(
-    inputs_embeds: torch.Tensor, timestep: torch.Tensor | float, mode: str
-) -> torch.Tensor:
-    """Condition concatenated [clean, noisy] tokens on log-noise timesteps."""
-    batch_size, sequence_length = inputs_embeds.shape[:2]
-    timesteps = (
-        torch.as_tensor(
-            timestep, device=inputs_embeds.device, dtype=inputs_embeds.dtype
-        )
-        .reshape(-1, 1)
-        .expand(batch_size, 1)
-    )
-    if mode == "uniform":
-        return timesteps
-    if mode == "per-token":
-        clean = inputs_embeds.new_zeros((batch_size, sequence_length // 2))
-        return torch.cat([clean, timesteps.expand_as(clean)], dim=1)
-    raise ValueError(f"Unknown timestep conditioning mode: {mode}")
 
 
 def train_block(
@@ -63,7 +40,6 @@ def train_block(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
-    model_config: LlamaDiTRunModelConfig,
 ):
     model.set_primary_device(device)
     model.set_loaded_block(block_idx)
@@ -115,7 +91,7 @@ def train_block(
             attention_mask=attention,
             position_ids=position_ids,
             timestep=build_timesteps(
-                features, sigmas.log(), model_config.timestep_conditioning
+                features, sigmas.log(), model.timestep_conditioning
             ),
             block_idx=block_idx,
         )
@@ -124,7 +100,7 @@ def train_block(
 
         logits = outputs.logits
         assert isinstance(logits, torch.Tensor)
-        assert logits.shape == (batch_size, sequence_length * 2 - 2, config.vocab_size)
+        assert logits.shape == (batch_size, sequence_length * 2 - 2, model.vocab_size)
 
         loss = F.cross_entropy(logits.permute(0, 2, 1), labels, reduction="none")
         loss = (loss * labels_mask).sum() / labels_mask.sum()
@@ -151,7 +127,6 @@ def train_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
-    model_config: LlamaDiTRunModelConfig,
 ) -> list[dict]:
     print(
         f"Training model on {len(dataloader.dataset)} samples for {train_config.num_epochs} epochs."  # type: ignore[reportArgumentType]
@@ -170,70 +145,10 @@ def train_model(
                 device=device,
                 noise_schedule=noise_schedule,
                 train_config=train_config,
-                model_config=model_config,
             )
             results += [{"block_idx": block_idx, **row} for row in block_results]
 
     return results
-
-
-def load_data(data_config: LlamaDataConfig):
-    if data_config.dataset_name == "randb":
-        train_dataset = predictable_dataset(
-            data_config.num_examples_train,
-            data_config.sequence_length,
-        )
-        test_dataset = predictable_dataset(
-            data_config.num_examples_test,
-            data_config.sequence_length,
-        )
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer_config.name)
-        assert isinstance(tokenizer, LlamaTokenizerFast)
-        tokenizer.padding_side = data_config.tokenizer_config.padding_side
-        tokenizer.add_bos_token = data_config.tokenizer_config.add_bos_token
-        tokenizer.add_eos_token = data_config.tokenizer_config.add_eos_token
-
-        def tokenize_function(examples):
-            result = tokenizer(
-                examples["text"],
-                padding="max_length",
-                truncation=True,
-                max_length=data_config.sequence_length,
-            )
-            return result
-
-        train_split = f"train[:{data_config.num_examples_train}]"
-        train_dataset = load_dataset(data_config.dataset_name, split=train_split)
-        train_dataset = train_dataset.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=["text"],
-        )
-
-        test_split = f"validation[:{data_config.num_examples_test}]"
-        test_dataset = load_dataset(data_config.dataset_name, split=test_split)
-        test_dataset = test_dataset.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=["text"],
-        )
-
-    train_dataset = train_dataset.with_format("torch")
-    test_dataset = test_dataset.with_format("torch")
-    assert isinstance(train_dataset, dataset_dict.Dataset)
-    assert isinstance(test_dataset, dataset_dict.Dataset)
-
-    train_dataloader = DataLoader(
-        train_dataset,  # type: ignore The dataset is simple enough to be compatible
-        batch_size=data_config.batch_size_train,
-    )
-    test_dataloader = DataLoader(
-        test_dataset,  # type: ignore The dataset is simple enough to be compatible
-        batch_size=data_config.batch_size_test,
-    )
-
-    return train_dataloader, test_dataloader
 
 
 @torch.no_grad
@@ -243,7 +158,6 @@ def evaluate_model(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     test_config: LlamaTestConfig,
-    model_config: LlamaDiTRunModelConfig,
 ):
     """Predict every token in a dataset using NTP and return the accuracy."""
     model.set_primary_device(device)
@@ -307,7 +221,7 @@ def evaluate_model(
             timestep_tensor = build_timesteps(
                 inputs_embeds,
                 timestep,
-                model_config.timestep_conditioning,
+                model.timestep_conditioning,
             )
 
             outputs: CausalLMOutputWithPast = model(
@@ -392,27 +306,10 @@ if __name__ == "__main__":
 
     noise_schedule = NoiseLevelDistribution()
 
-    # See Appendix E.4 in the Sakana.ai paper
-    # TODO: Generate this in an organized way from model_config
-    config = LlamaDiTConfig(
-        vocab_size=32000,
-        num_hidden_layers=run_config.model_config.num_hidden_layers,
-        hidden_size=run_config.model_config.hidden_size,
-        num_attention_heads=12,
-        intermediate_size=3072,
-        num_blocks=run_config.model_config.num_blocks,
-        use_timestep_embedding=run_config.model_config.embed_timesteps,
-        timestep_conditioning=run_config.model_config.timestep_conditioning,
-        block_boundaries=noise_schedule.get_block_stdevs(
-            run_config.model_config.num_blocks
-        ),
-        apply_freq_fix=run_config.model_config.apply_freq_fix,
-    )
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if checkpoint_load_path is None:
-        model = LlamaDiTForCausalLM(config)
+        model = LlamaDiTForCausalLM(run_config.model_config)
     else:
         model = LlamaDiTForCausalLM.from_pretrained(checkpoint_load_path)
 
@@ -425,7 +322,6 @@ if __name__ == "__main__":
             device=device,
             noise_schedule=noise_schedule,
             train_config=run_config.train_config,
-            model_config=run_config.model_config,
         )
 
         model.save_pretrained(checkpoint_save_path, max_shard_size="1GB")
@@ -445,5 +341,4 @@ if __name__ == "__main__":
             device=device,
             noise_schedule=noise_schedule,
             test_config=run_config.test_config,
-            model_config=run_config.model_config,
         )
