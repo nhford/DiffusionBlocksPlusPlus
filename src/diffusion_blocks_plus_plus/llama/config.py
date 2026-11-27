@@ -25,14 +25,18 @@ class LlamaDataConfig:
     Attributes:
         dataset_name: The Huggingface ID of the dataset being loaded.
             Also accepts "randb" for random binary strings.
+        num_examples_train: Number of training examples to use. None uses the
+            full train partition.
+        num_examples_test: Number of test examples to use. None uses the full
+            validation partition.
     """
 
     dataset_name: str = "roneneldan/TinyStories"
     tokenizer_config: LlamaTokenizerConfig = field(default_factory=LlamaTokenizerConfig)
     sequence_length: int = 256
-    num_examples_train: int = 10000
+    num_examples_train: int | None = None
     batch_size_train: int = 256
-    num_examples_test: int = 1000
+    num_examples_test: int | None = None
     batch_size_test: int = 256
 
 
