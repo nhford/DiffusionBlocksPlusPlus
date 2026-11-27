@@ -1,11 +1,13 @@
 import argparse
 import math
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 import pandas
 import torch
 import torch.nn.functional as F
+import wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -40,6 +42,7 @@ def train_block(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
+    step_offset: int,
 ):
     model.set_primary_device(device)
     model.set_loaded_block(block_idx)
@@ -115,9 +118,21 @@ def train_block(
 
         optimizer.zero_grad()
 
-        results.append(
-            {"batch_idx": batch_idx, "loss": loss.item(), **memory_tracker.as_dict()}
-        )
+        row = {"batch_idx": batch_idx, "loss": loss.item(), **memory_tracker.as_dict()}
+        results.append(row)
+        if wandb.run is not None:
+            prefix = f"train/block_{block_idx}"
+            wandb.log(
+                {
+                    f"{prefix}/step": step_offset + batch_idx,
+                    f"{prefix}/loss": row["loss"],
+                    **{
+                        f"{prefix}/{k}": v
+                        for k, v in row.items()
+                        if k.startswith("mem_")
+                    },
+                }
+            )
         progress.set_postfix({"loss": loss.item()})
     return results
 
@@ -135,6 +150,15 @@ def train_model(
 
     results = []
 
+    if wandb.run is not None:
+        for block_idx in range(model.num_blocks):
+            # Each block gets its own charts, plotted against its own step.
+            wandb.define_metric(f"train/block_{block_idx}/step")
+            wandb.define_metric(
+                f"train/block_{block_idx}/*",
+                step_metric=f"train/block_{block_idx}/step",
+            )
+
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
         for epoch_idx in tqdm(
             range(train_config.num_epochs), leave=False, desc="Epoch"
@@ -146,6 +170,7 @@ def train_model(
                 device=device,
                 noise_schedule=noise_schedule,
                 train_config=train_config,
+                step_offset=epoch_idx * len(dataloader),
             )
             results += [{"block_idx": block_idx, **row} for row in block_results]
 
@@ -267,6 +292,16 @@ def evaluate_model(
         num_examples += prediction_targets.sum().item()
 
         progress.set_postfix({"acc": num_correct / num_examples})
+        if wandb.run is not None:
+            wandb.log(
+                {
+                    "eval/batch_idx": batch_idx,
+                    "eval/running_acc": num_correct / num_examples,
+                }
+            )
+
+    if wandb.run is not None and num_examples > 0:
+        wandb.summary["eval/acc"] = num_correct / num_examples
 
 
 if __name__ == "__main__":
@@ -306,6 +341,12 @@ if __name__ == "__main__":
     run_config = LlamaDiTRunConfig()
     if args.config is not None:
         run_config = load_config(args.config)
+
+    wandb.init(
+        project="dblocks-tinystories",
+        job_type=action,
+        config=asdict(run_config),
+    )
 
     train_dataloader, test_dataloader = load_data(run_config.data_config)
 
@@ -347,3 +388,5 @@ if __name__ == "__main__":
             noise_schedule=noise_schedule,
             test_config=run_config.test_config,
         )
+
+    wandb.finish()
