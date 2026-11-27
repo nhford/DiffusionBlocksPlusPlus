@@ -1,8 +1,11 @@
+import json
 from dataclasses import asdict, dataclass, field
 from os import PathLike
 
-import dacite
 import yaml
+from dacite import Config, from_dict
+
+from .model import LlamaDiTConfig
 
 
 @dataclass
@@ -39,6 +42,7 @@ class LlamaTrainConfig:
 
     learning_rate: float = 0.001
     num_epochs: int = 1
+    bd3_lm_block_size: int = 1
 
 
 @dataclass
@@ -47,19 +51,7 @@ class LlamaTestConfig:
 
     eval_num_steps: int = 10
     sampler: str = "euler"
-
-
-@dataclass
-class LlamaDiTRunModelConfig:
-    """The subset of LlamaDiT parameters that can be configured from yaml"""
-
-    hidden_size: int = 768
-    num_hidden_layers: int = 12
-    num_blocks: int = 3
-    embed_timesteps: bool = True
-    timestep_conditioning: str = "uniform"
-    apply_freq_fix: bool = True
-    block_diffusion_size: int = 1
+    bd3_lm_block_size: int = 1
 
 
 @dataclass
@@ -67,19 +59,27 @@ class LlamaDiTRunConfig:
     """Configuration for Llama"""
 
     data_config: LlamaDataConfig = field(default_factory=LlamaDataConfig)
-    model_config: LlamaDiTRunModelConfig = field(default_factory=LlamaDiTRunModelConfig)
+    model_config: LlamaDiTConfig = field(default_factory=LlamaDiTConfig)
     train_config: LlamaTrainConfig | None = field(default_factory=LlamaTrainConfig)
     test_config: LlamaTestConfig | None = field(default_factory=LlamaTestConfig)
 
 
 def load_config(file: str | PathLike) -> LlamaDiTRunConfig:
     with open(file, "r") as f:
-        config = dacite.from_dict(
-            LlamaDiTRunConfig, yaml.safe_load(f), config=dacite.Config(strict=True)
+        config = from_dict(
+            LlamaDiTRunConfig,
+            yaml.safe_load(f),
+            config=Config(
+                type_hooks={LlamaDiTConfig: LlamaDiTConfig.from_dict}, strict=True
+            ),
         )
     return config
 
 
 def save_config(file: str | PathLike, config: LlamaDiTRunConfig) -> None:
     with open(file, "w") as f:
-        yaml.safe_dump(asdict(config), f)
+        data = asdict(config)
+        data["model_config"] = json.loads(
+            config.model_config.to_json_string(use_diff=True)
+        )
+        yaml.safe_dump(data, f)

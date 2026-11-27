@@ -17,9 +17,9 @@ def mask_to_pos(mask: torch.Tensor) -> torch.Tensor:
 
 def build_diffusion_attention_mask(
     clean_mask: torch.Tensor,
-    clean_positions: torch.Tensor,
+    clean_groupids: torch.Tensor,
     noisy_mask: torch.Tensor,
-    noisy_positions: torch.Tensor,
+    noisy_groupids: torch.Tensor,
     dtype=torch.float,
 ) -> torch.Tensor:
     """Build the attention mask for auto-regressive DiffusionBlocks input
@@ -42,12 +42,12 @@ def build_diffusion_attention_mask(
     clean_mask: A shape `(B, S_c)` tensor containing 1 at locations in the
         clean sequence with non-padding tokens, and 0 at locations with
         padding tokens.
-    clean_positions: A shape `(B, S_c)` tensor containing position ids for
+    clean_groupids: A shape `(B, S_c)` tensor containing group ids for
         the clean sequence.
     noisy_mask: A shape `(B, S_n)` tensor containing 1 at locations in the
         noisy sequence with non-padding tokens, and 0 at locations with
         padding.
-    noisy_positions: A shape `(B, S_n)` tensor containing position ids for
+    noisy_groupids: A shape `(B, S_n)` tensor containing group ids for
         the noisy sequence.
     dtype: The dtype of the attention matrix.
 
@@ -58,36 +58,33 @@ def build_diffusion_attention_mask(
     """
     if not (
         len(clean_mask.shape) == 2
-        and len(clean_positions.shape) == 2
+        and len(clean_groupids.shape) == 2
         and len(noisy_mask.shape) == 2
-        and len(noisy_positions.shape) == 2
-        and clean_mask.shape[0]
-        == clean_positions.shape[0]
-        == noisy_mask.shape[0]
-        == noisy_positions.shape[0]
-        and clean_mask.shape[1] == clean_positions.shape[1]
-        and noisy_mask.shape[1] == noisy_positions.shape[1]
+        and len(noisy_groupids.shape) == 2
+        and clean_mask.shape == clean_groupids.shape
+        and noisy_mask.shape == noisy_groupids.shape
+        and clean_mask.shape[0] == noisy_mask.shape[0]
     ):
         raise ValueError(
             "Invalid shapes:\n"
             f"{clean_mask.shape=}\n"
-            f"{clean_positions.shape=}\n"
+            f"{clean_groupids.shape=}\n"
             f"{noisy_mask.shape=}\n"
-            f"{noisy_positions.shape=}"
+            f"{noisy_groupids.shape=}"
         )
 
     if not (
         clean_mask.device
-        == clean_positions.device
+        == clean_groupids.device
         == noisy_mask.device
-        == noisy_positions.device
+        == noisy_groupids.device
     ):
         raise ValueError(
             "All tensors must be on the same device. Got\n"
             f"{clean_mask.device=}\n"
-            f"{clean_positions.device=}\n"
+            f"{clean_groupids.device=}\n"
             f"{noisy_mask.device=}\n"
-            f"{noisy_positions.device=}"
+            f"{noisy_groupids.device=}"
         )
 
     clean_mask = clean_mask.bool()
@@ -98,31 +95,34 @@ def build_diffusion_attention_mask(
     S_c = clean_mask.shape[1]
     S_n = noisy_mask.shape[1]
 
-    clean_query_idx = clean_positions[:, None, :, None]
-    clean_key_idx = clean_positions[:, None, None, :]
+    clean_query_grp = clean_groupids[:, None, :, None]
+    clean_key_grp = clean_groupids[:, None, None, :]
 
-    noisy_query_idx = noisy_positions[:, None, :, None]
-    noisy_key_idx = noisy_positions[:, None, None, :]
+    noisy_query_grp = noisy_groupids[:, None, :, None]
+    noisy_key_grp = noisy_groupids[:, None, None, :]
 
     # Compute the four quadrants of the attention mask.
-    clean_to_clean = clean_query_idx > clean_key_idx
+
+    # Clean tokens can attend to tokens in the same or previous groups
+    clean_to_clean = clean_query_grp >= clean_key_grp
     clean_to_clean = clean_to_clean & clean_mask[:, None, None, :]
     clean_to_clean = clean_to_clean & clean_mask[:, None, :, None]
-    clean_to_clean = (
-        clean_to_clean
-        | torch.eye(S_c, dtype=torch.bool, device=device)[None, None, :, :]
-    )
     clean_to_clean = clean_to_clean.broadcast_to((B, 1, S_c, S_c))
 
-    noisy_to_clean = noisy_query_idx > clean_key_idx
+    # Clean tokens can't attent to noisy tokens
+    clean_to_noisy = torch.zeros((B, 1, S_c, S_n), dtype=torch.bool, device=device)
+
+    # Noisy tokens can attend to clean tokens in previous groups
+    noisy_to_clean = noisy_query_grp > clean_key_grp
     noisy_to_clean = noisy_to_clean & clean_mask[:, None, None, :]
     noisy_to_clean = noisy_to_clean & noisy_mask[:, None, :, None]
     noisy_to_clean = noisy_to_clean.broadcast_to((B, 1, S_n, S_c))
 
-    noisy_to_noisy = torch.eye(S_n, dtype=torch.bool, device=device)[None, None, :, :]
+    # Noisy tokens can attend to noisy tokens in the same group
+    noisy_to_noisy = noisy_query_grp == noisy_key_grp
+    noisy_to_noisy = noisy_to_noisy & noisy_mask[:, None, None, :]
+    noisy_to_noisy = noisy_to_noisy & noisy_mask[:, None, :, None]
     noisy_to_noisy = noisy_to_noisy.broadcast_to((B, 1, S_n, S_n))
-
-    clean_to_noisy = torch.zeros((B, 1, S_c, S_n), dtype=torch.bool, device=device)
 
     # Convert the quadrants into an attention matrix.
     attention_mask = torch.cat(
@@ -132,14 +132,23 @@ def build_diffusion_attention_mask(
         ],
         dim=2,
     )
+    # Add diagonal for safety
+    attention_mask = (
+        attention_mask
+        | torch.eye(S_c + S_n, dtype=torch.bool, device=device)[None, None, :, :]
+    )
+    # Convert into float tensor
     attention_mask = torch.where(attention_mask, 0, float("-inf")).to(dtype)
 
     return attention_mask
 
 
-def build_train_attention_mask(token_mask: torch.Tensor):
-    """Build the attention mask for auto-regressive DiffusionBlocks
-    training.
+def build_bd3lm_train_attention_mask(token_mask: torch.Tensor, block_size: int):
+    """Build the attention mask for auto-regressive DiffusionBlocks training.
+
+    This implements a fixed block-size mask corresponding to the BD3-LM
+    architecture from "Block Diffusion: Interpolating Between Autoregressive and
+    Diffusion Language Models".
 
     Throughout the rest of this documentation, let
     `B` be the number of sequences in the current batch, and
@@ -148,8 +157,9 @@ def build_train_attention_mask(token_mask: torch.Tensor):
     See `build_diffusion_attention_mask` for nore information.
 
     Args:
-        token_mask: A shape `(B, S)` tensor containing 1 at locations
-            with non-padding tokens, and 0 at locations with padding tokens.
+        token_mask: A shape `(B, S)` tensor containing 1 at locations with
+            non-padding tokens, and 0 at locations with padding tokens.
+        block_size: The size of the blocks to denoise.
 
     Returns:
         A tensor of shape `(B, 1, (S * 2 - 2), (S * 2 - 2))` with the
@@ -157,20 +167,44 @@ def build_train_attention_mask(token_mask: torch.Tensor):
     """
     if len(token_mask.shape) != 2:
         raise ValueError(f"Invalid token mask shape: {token_mask.shape=}")
+    if block_size < 1:
+        raise ValueError(f"Block size must be at least 1: {block_size=}")
 
     clean_mask = token_mask[:, :-1]
-    # A noisy token should is relevant iff it is non-padding and it is preceeded
-    # by a non-padding token.
+    # A noisy token is relevant iff it is non-padding and it is preceeded by a
+    # non-padding token.
     noisy_mask = token_mask[:, 1:] & token_mask[:, :-1]
-    clean_positions = mask_to_pos(token_mask)[:, :-1]
-    noisy_positions = mask_to_pos(token_mask)[:, 1:]
+    positions = mask_to_pos(token_mask)
+    groups = positions // block_size
+    clean_groupids = groups[:, :-1]
+    noisy_groupids = groups[:, 1:]
 
     return build_diffusion_attention_mask(
         clean_mask=clean_mask,
-        clean_positions=clean_positions,
+        clean_groupids=clean_groupids,
         noisy_mask=noisy_mask,
-        noisy_positions=noisy_positions,
+        noisy_groupids=noisy_groupids,
     )
+
+
+def build_train_attention_mask(token_mask: torch.Tensor):
+    """Build the attention mask for auto-regressive DiffusionBlocks training.
+
+    Throughout the rest of this documentation, let
+    `B` be the number of sequences in the current batch, and
+    `S` be the length of the token sequence being processed.
+
+    See `build_diffusion_attention_mask` for nore information.
+
+    Args:
+        token_mask: A shape `(B, S)` tensor containing 1 at locations with
+            non-padding tokens, and 0 at locations with padding tokens.
+
+    Returns:
+        A tensor of shape `(B, 1, (S * 2 - 2), (S * 2 - 2))` with the
+        attention mask.
+    """
+    return build_bd3lm_train_attention_mask(token_mask, 1)
 
 
 # def build_decoding_attention_mask(token_mask: torch.Tensor):
