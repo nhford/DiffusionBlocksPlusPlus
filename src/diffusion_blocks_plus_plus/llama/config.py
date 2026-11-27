@@ -41,6 +41,7 @@ class LlamaTrainConfig:
     """Configuration for Training Run"""
 
     learning_rate: float = 0.001
+    warmup_steps: int = 100
     num_epochs: int = 1
     bd3_lm_block_size: int = 1
 

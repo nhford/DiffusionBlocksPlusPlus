@@ -8,6 +8,7 @@ import pandas
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -43,20 +44,15 @@ def train_block(
     device: torch.device,
     noise_schedule: NoiseLevelDistribution,
     train_config: LlamaTrainConfig,
+    optimizer: AdamW,
+    scheduler: LRScheduler,
     step_offset: int,
 ):
-    model.set_primary_device(device)
-    model.set_loaded_block(block_idx)
-
     model.train()
 
     min_stdev, max_stdev = (
         model.block_boundaries[block_idx],
         model.block_boundaries[block_idx + 1],
-    )
-
-    optimizer = AdamW(
-        model.block_parameters(block_idx, True), lr=train_config.learning_rate
     )
 
     memory_tracker = MemoryTracker(model, optimizer, device)
@@ -113,7 +109,9 @@ def train_block(
 
         memory_tracker.measure_mem_grad(block_idx)
 
+        current_lr = optimizer.param_groups[0]["lr"]
         optimizer.step()
+        scheduler.step()
 
         memory_tracker.measure_mem_optim()
 
@@ -127,6 +125,7 @@ def train_block(
                 {
                     f"{prefix}/step": step_offset + batch_idx,
                     f"{prefix}/loss": row["loss"],
+                    f"{prefix}/lr": current_lr,
                     **{
                         f"{prefix}/{k}": v
                         for k, v in row.items()
@@ -161,6 +160,18 @@ def train_model(
             )
 
     for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
+        model.set_primary_device(device)
+        model.set_loaded_block(block_idx)
+
+        optimizer = AdamW(
+            model.block_parameters(block_idx, True), lr=train_config.learning_rate
+        )
+
+        scheduler = LambdaLR(
+            optimizer=optimizer,
+            lr_lambda=lambda step: min((step + 1) / train_config.warmup_steps, 1.0),
+        )
+
         for epoch_idx in tqdm(
             range(train_config.num_epochs), leave=False, desc="Epoch"
         ):
@@ -171,6 +182,8 @@ def train_model(
                 device=device,
                 noise_schedule=noise_schedule,
                 train_config=train_config,
+                optimizer=optimizer,
+                scheduler=scheduler,
                 step_offset=epoch_idx * len(dataloader),
             )
             results += [{"block_idx": block_idx, **row} for row in block_results]
