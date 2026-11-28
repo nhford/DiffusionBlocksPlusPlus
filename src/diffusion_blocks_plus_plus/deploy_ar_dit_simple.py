@@ -27,7 +27,7 @@ from .llama.config import (
     save_config,
 )
 from .llama.data import (
-    build_timesteps,
+    build_lambdas,
     load_data,
     prepare_training_batch,
 )
@@ -91,9 +91,7 @@ def train_block(
             inputs_embeds=features,
             attention_mask=attention,
             position_ids=position_ids,
-            timestep=build_timesteps(
-                features, sigmas.log(), model.timestep_conditioning
-            ),
+            lam=build_lambdas(features, -sigmas.log(), model.timestep_conditioning),
             block_idx=block_idx,
         )
 
@@ -256,7 +254,7 @@ def evaluate_model(
         @torch.no_grad
         def get_logits(
             noisy_embeddings: torch.Tensor,
-            timestep: float,
+            lam: float,
             *,
             clean_embeddings=clean_embeddings,
             attention_mask=attention_mask,
@@ -267,13 +265,13 @@ def evaluate_model(
             model.eval()
 
             # Normalize inputs
-            noisy_embeddings = noisy_embeddings / math.sqrt(math.exp(timestep) ** 2 + 1)
+            noisy_embeddings = noisy_embeddings / math.sqrt(math.exp(-lam) ** 2 + 1)
 
             inputs_embeds = torch.cat([clean_embeddings, noisy_embeddings], dim=1)
 
-            timestep_tensor = build_timesteps(
+            lambda_tensor = build_lambdas(
                 inputs_embeds,
-                timestep,
+                lam,
                 model.timestep_conditioning,
             )
 
@@ -281,7 +279,7 @@ def evaluate_model(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                timestep=timestep_tensor,
+                lam=lambda_tensor,
             )
 
             logits = outputs.logits
@@ -289,21 +287,21 @@ def evaluate_model(
             return logits[:, sequence_length - 1 :, :]
 
         @torch.no_grad
-        def ODE(noisy_embeddings: torch.Tensor, timestep: float) -> torch.Tensor:
-            """Get the change in hidden embedding with respect to timestep"""
-            noisy_logits = get_logits(noisy_embeddings, timestep)
+        def ODE(noisy_embeddings: torch.Tensor, lam: float) -> torch.Tensor:
+            """Get the change in hidden embedding with respect to sigma at log-SNR lambda"""
+            noisy_logits = get_logits(noisy_embeddings, lam)
             expected = model.embed_output_logits(noisy_logits)
-            return (noisy_embeddings - expected) / math.exp(timestep)
+            return (noisy_embeddings - expected) / math.exp(-lam)
 
         noise_levels = noise_schedule.get_discrete_stdevs(test_config.eval_num_steps)
 
         noisy_embeddings = torch.randn_like(clean_embeddings) * initial_stdev
-        timesteps = [math.log(stdev) for stdev in noise_levels]
+        lambdas = [-math.log(stdev) for stdev in noise_levels]
         noisy_embeddings = sample(
-            noisy_embeddings, timesteps, ODE, sampler=test_config.sampler
+            noisy_embeddings, lambdas, ODE, sampler=test_config.sampler
         )
-        t_final = timesteps[-1]
-        predictions = get_logits(noisy_embeddings, t_final).argmax(-1)
+        lambda_final = lambdas[-1]
+        predictions = get_logits(noisy_embeddings, lambda_final).argmax(-1)
         assert predictions.shape == (batch_size, (sequence_length - 1))
 
         correct = predictions == token_ids[:, 1:]

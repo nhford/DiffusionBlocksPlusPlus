@@ -8,38 +8,40 @@ from tqdm import tqdm
 
 def sample(
     initial_embeddings: torch.Tensor,
-    timesteps: Sequence[float],
+    lambdas: Sequence[float],
     ode: Callable[[torch.Tensor, float], torch.Tensor],
     sampler: str = "euler",
 ) -> torch.Tensor:
-    """Integrate embeddings over a log-noise timestep grid.
+    """Integrate embeddings over a log-SNR (lambda) grid.
 
-    The ODE callback returns dx/dt for t = log(sigma). Model selection and
+    Here lambda = log(SNR) = -log(sigma), so lambdas should be increasing
+    as noise decreases. The ODE callback returns dx/dsigma at the given
+    lambda, with sigma = exp(-lambda). Model selection and
     denoising predictions belong to the caller. Updates modify the supplied
     embeddings in place, matching the original evaluation loop.
     """
     if sampler in {"dpmpp_2m", "dpmpp_2s"}:
-        return sample_dpmpp(initial_embeddings, timesteps, ode, sampler)
+        return sample_dpmpp(initial_embeddings, lambdas, ode, sampler)
 
     embeddings = initial_embeddings
-    for timestep, next_timestep in tqdm(
-        list(itertools.pairwise(timesteps)),
+    for lam, next_lam in tqdm(
+        list(itertools.pairwise(lambdas)),
         desc="Denoise Step",
         leave=False,
     ):
         # Note that we do this because the original paper uses the EDM Karras
         # formulation.
-        d_stdev = math.exp(next_timestep) - math.exp(timestep)
-        slope = ode(embeddings, timestep)
+        d_stdev = math.exp(-next_lam) - math.exp(-lam)
+        slope = ode(embeddings, lam)
         if sampler == "euler":
             embeddings += slope * d_stdev
         elif sampler == "heun":
             predictor = embeddings + slope * d_stdev
-            endpoint_slope = ode(predictor, next_timestep)
+            endpoint_slope = ode(predictor, next_lam)
             embeddings += (slope + endpoint_slope) * (d_stdev / 2)
         elif sampler == "midpoint":
             midpoint = embeddings + slope * (d_stdev / 2)
-            midpoint_slope = ode(midpoint, timestep + d_stdev / 2)
+            midpoint_slope = ode(midpoint, -math.log(math.exp(-lam) + d_stdev / 2))
             embeddings += midpoint_slope * d_stdev
         else:
             raise ValueError(f"Unknown sampler: {sampler}")
@@ -48,34 +50,33 @@ def sample(
 
 def sample_dpmpp(
     initial_embeddings: torch.Tensor,
-    timesteps: Sequence[float],
+    lambdas: Sequence[float],
     ode: Callable[[torch.Tensor, float], torch.Tensor],
     sampler: str,
 ) -> torch.Tensor:
     """See https://arxiv.org/pdf/2211.01095"""
 
-    def data_prediction(x: torch.Tensor, t: float) -> torch.Tensor:
-        return x - math.exp(t) * ode(x, t)
+    def data_prediction(x: torch.Tensor, lam: float) -> torch.Tensor:
+        return x - math.exp(-lam) * ode(x, lam)
 
     x = initial_embeddings
     prev_data_pred: torch.Tensor | None = None
     prev_h: float | None = None
 
-    for t_i, t_next in tqdm(
-        list(itertools.pairwise(timesteps)),
+    for lam_i, lam_next in tqdm(
+        list(itertools.pairwise(lambdas)),
         desc="Denoise Step",
         leave=False,
     ):
-        lambda_i, lambda_next = -t_i, -t_next
-        h = lambda_next - lambda_i
-        sigma_ratio = math.exp(t_next - t_i)
-        data_pred = data_prediction(x, t_i)
+        h = lam_next - lam_i
+        sigma_ratio = math.exp(-h)
+        data_pred = data_prediction(x, lam_i)
 
         if sampler == "dpmpp_2s":
             r = 0.5
-            t_s = -(lambda_i + r * h)
-            u = math.exp(t_s - t_i) * x - (math.exp(-r * h) - 1) * data_pred
-            data_pred_s = data_prediction(u, t_s)
+            lam_s = lam_i + r * h
+            u = math.exp(-r * h) * x - (math.exp(-r * h) - 1) * data_pred
+            data_pred_s = data_prediction(u, lam_s)
             D = (1 - 1 / (2 * r)) * data_pred + (1 / (2 * r)) * data_pred_s
         elif sampler == "dpmpp_2m":
             if prev_data_pred is None or prev_h is None:

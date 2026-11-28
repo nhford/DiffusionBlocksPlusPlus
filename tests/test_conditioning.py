@@ -44,8 +44,8 @@ def test_conditioning_reaches_all_normalizations(sequence_length):
         attn_implementation="eager",
     )
     model = LlamaDiTBlockForCausalLM(config)
-    timesteps = torch.randn(2, sequence_length)
-    expected = model.model.time_embedder(timesteps)
+    lambdas = torch.randn(2, sequence_length)
+    expected = model.model.time_embedder(lambdas)
     seen = []
 
     def check_conditioning(module, args):
@@ -55,7 +55,7 @@ def test_conditioning_reaches_all_normalizations(sequence_length):
     norms = [module for module in model.modules() if isinstance(module, AdaRMS)]
     handles = [norm.register_forward_pre_hook(check_conditioning) for norm in norms]
     try:
-        output = model(inputs_embeds=torch.randn(2, 6, 16), timestep=timesteps)
+        output = model(inputs_embeds=torch.randn(2, 6, 16), lam=lambdas)
         assert output.logits.shape == (2, 6, 16)
         assert len(norms) == 2 + 2 * len(model.model.layers)
         assert len(seen) == len(norms)
