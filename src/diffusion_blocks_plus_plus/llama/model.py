@@ -115,7 +115,7 @@ class TimestepEmbedder(nn.Module):
     This module computes timestep embeddings by running a frequency embedding
     through a MLP.
 
-    Takes log-noise timesteps of shape [batch_size, sequence] and returns
+    Takes log-SNR (lambda) timesteps of shape [batch_size, sequence] and returns
     embeddings of shape [batch_size, sequence, hidden_size]. Legacy
     [batch_size] inputs are treated as [batch_size, 1].
     """
@@ -191,7 +191,7 @@ class LlamaDiTConfig(LlamaConfig):
         head_dim=None,
         cond_hidden_size: int | None = None,
         use_timestep_embedding=True,
-        num_blocks=3,
+        num_blocks=4,
         block_boundaries: list[float] | None = None,
         apply_freq_fix=True,
         timestep_conditioning="uniform",
@@ -372,7 +372,7 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         output_attentions: bool | None = None,
         output_hidden_states: bool | None = None,
         cache_position: torch.LongTensor | None = None,
-        timestep: torch.FloatTensor | None = None,
+        lam: torch.FloatTensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         output_attentions = (
@@ -392,9 +392,9 @@ class LlamaDiTModel(LlamaPreTrainedModel):
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
 
-        if (timestep is None) == self.use_timestep_embedding:
+        if (lam is None) == self.use_timestep_embedding:
             raise ValueError(
-                "You must specify timestep iff use_timestep_embedding is active"
+                "You must specify lam iff use_timestep_embedding is active"
             )
 
         if self.gradient_checkpointing and self.training and use_cache:
@@ -446,7 +446,7 @@ class LlamaDiTModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
 
         if self.use_timestep_embedding:
-            timestep_embeddings = self.time_embedder(timestep)
+            timestep_embeddings = self.time_embedder(lam)
 
         if self.use_timestep_embedding:
             hidden_states = self.input_norm(hidden_states, timestep_embeddings)
@@ -685,7 +685,7 @@ class LlamaDiTBlockForCausalLM(LlamaPreTrainedModel):
         output_hidden_states: bool | None = None,
         cache_position: torch.LongTensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
-        timestep: torch.FloatTensor | None = None,
+        lam: torch.FloatTensor | None = None,
         **kwargs: Unpack[KwargsForCausalLM],
     ) -> CausalLMOutputWithPast:
         r"""
@@ -732,7 +732,7 @@ class LlamaDiTBlockForCausalLM(LlamaPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
-            timestep=timestep,
+            lam=lam,
             **kwargs,
         )
 
@@ -849,28 +849,26 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         )
         return likelihoods @ embeddings
 
-    def get_block_from_timestep(self, timestep: float | torch.Tensor) -> int:
-        """Select by log-noise time; exact boundaries use the lower-noise block."""
-        if isinstance(timestep, torch.Tensor):
-            timestep = timestep.float()
-            clean_positions = timestep == 0
+    def get_block_from_lambda(self, lam: float | torch.Tensor) -> int:
+        """Select by log-SNR (lambda = -log sigma); exact boundaries use the
+        lower-noise block."""
+        if isinstance(lam, torch.Tensor):
+            lam = lam.float()
+            clean_positions = lam == 0
             noisy_positions = ~clean_positions
             if clean_positions.all():
-                minimum_timestep = maximum_timestep = 0
+                minimum_lam = maximum_lam = 0
             else:
-                minimum_timestep = timestep.where(
-                    noisy_positions, float("infinity")
-                ).min()
-                minimum_timestep = minimum_timestep.item()
-                maximum_timestep = timestep.where(
-                    noisy_positions, float("-infinity")
-                ).max()
-                maximum_timestep = maximum_timestep.item()
+                minimum_lam = lam.where(noisy_positions, float("infinity")).min()
+                minimum_lam = minimum_lam.item()
+                maximum_lam = lam.where(noisy_positions, float("-infinity")).max()
+                maximum_lam = maximum_lam.item()
         else:
-            minimum_timestep = maximum_timestep = timestep
+            minimum_lam = maximum_lam = lam
 
-        minimum_stdev = math.exp(minimum_timestep)
-        maximum_stdev = math.exp(maximum_timestep)
+        # sigma = exp(-lambda), so the lambda ordering is reversed.
+        minimum_stdev = math.exp(-maximum_lam)
+        maximum_stdev = math.exp(-minimum_lam)
 
         extended_stdev_boundaries = [0, *self.block_boundaries[1:-1], float("infinity")]
 
@@ -892,16 +890,16 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         attention_mask: torch.Tensor,
         position_ids: torch.Tensor,
         inputs_embeds: torch.Tensor,
-        timestep: torch.Tensor | None = None,
+        lam: torch.Tensor | None = None,
         block_idx: int | None = None,
     ):
-        if timestep is None and self.embed_timesteps:
-            raise ValueError("Must specify timestep when embed_timesteps is true")
+        if lam is None and self.embed_timesteps:
+            raise ValueError("Must specify lam when embed_timesteps is true")
 
         if block_idx is None:
-            if timestep is None:
-                raise ValueError("Must specify timestep or block_idx")
-            block_idx = self.get_block_from_timestep(timestep)
+            if lam is None:
+                raise ValueError("Must specify lam or block_idx")
+            block_idx = self.get_block_from_lambda(lam)
 
         if not 0 <= block_idx < self.num_blocks:
             raise ValueError(f"Invalid block index: {block_idx=}, {self.num_blocks=}")
@@ -910,7 +908,7 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
 
         target_block = self.blocks[block_idx]
 
-        timestep_embedding = {"timestep": timestep} if self.embed_timesteps else {}
+        timestep_embedding = {"lam": lam} if self.embed_timesteps else {}
 
         return target_block(
             inputs_embeds=inputs_embeds,

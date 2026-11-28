@@ -1,10 +1,11 @@
 data_config:
-  dataset_name: randb
-  sequence_length: 4
+  sequence_length: 32
   num_examples_train: 10000
   batch_size_train: 32
   num_examples_test: 1000
   batch_size_test: 32
-model_config:
-  num_hidden_layers: 24
-  num_blocks: 4
+train_config:
+  num_epochs: 1
+  warmup_steps: 100
+test_config:
+  eval_num_steps: 4
