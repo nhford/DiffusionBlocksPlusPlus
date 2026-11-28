@@ -57,7 +57,7 @@ noise_config:
 test_config:
   bd3_lm_block_size: 1
   eval_num_steps: 4
-  sampler: euler
+  sampler: karras_euler
 train_config:
   bd3_lm_block_size: 1
   learning_rate: 0.0003

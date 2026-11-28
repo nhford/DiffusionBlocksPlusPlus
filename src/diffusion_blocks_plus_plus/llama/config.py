@@ -67,7 +67,7 @@ class LlamaTestConfig:
     """Configuration for Test Run"""
 
     eval_num_steps: int = 4
-    sampler: str = "euler"
+    sampler: str = "karras_euler"
     bd3_lm_block_size: int = 1
 
 

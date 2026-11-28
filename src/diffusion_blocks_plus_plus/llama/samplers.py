@@ -10,7 +10,7 @@ def sample(
     initial_embeddings: torch.Tensor,
     lambdas: Sequence[float],
     ode: Callable[[torch.Tensor, float], torch.Tensor],
-    sampler: str = "euler",
+    sampler: str = "karras_euler",
 ) -> torch.Tensor:
     """Integrate embeddings over a log-SNR (lambda) grid.
 
@@ -23,6 +23,19 @@ def sample(
     if sampler in {"dpmpp_2m", "dpmpp_2s"}:
         return sample_dpmpp(initial_embeddings, lambdas, ode, sampler)
 
+    if sampler in {"karras_euler", "karras_heun", "karras_midpoint"}:
+        return sample_karras(initial_embeddings, lambdas, ode, sampler)
+
+    raise ValueError(f"Unknown sampler: {sampler}")
+
+
+def sample_karras(
+    initial_embeddings: torch.Tensor,
+    lambdas: Sequence[float],
+    ode: Callable[[torch.Tensor, float], torch.Tensor],
+    sampler: str,
+) -> torch.Tensor:
+    """Integrators for the EDM (Karras) formulation, stepping in sigma."""
     embeddings = initial_embeddings
     for lam, next_lam in tqdm(
         list(itertools.pairwise(lambdas)),
@@ -33,13 +46,13 @@ def sample(
         # formulation.
         d_stdev = math.exp(-next_lam) - math.exp(-lam)
         slope = ode(embeddings, lam)
-        if sampler == "euler":
+        if sampler == "karras_euler":
             embeddings += slope * d_stdev
-        elif sampler == "heun":
+        elif sampler == "karras_heun":
             predictor = embeddings + slope * d_stdev
             endpoint_slope = ode(predictor, next_lam)
             embeddings += (slope + endpoint_slope) * (d_stdev / 2)
-        elif sampler == "midpoint":
+        elif sampler == "karras_midpoint":
             midpoint = embeddings + slope * (d_stdev / 2)
             midpoint_slope = ode(midpoint, -math.log(math.exp(-lam) + d_stdev / 2))
             embeddings += midpoint_slope * d_stdev
