@@ -235,7 +235,7 @@ class LlamaDiTConfig(LlamaConfig):
                 f"The number of blocks ({self.num_blocks}) should divide the number of hidden layers ({self.num_hidden_layers})."
             )
         if block_boundaries is None:
-            self.block_boundaries = DEFAULT_SCHEDULE.get_block_stdevs(self.num_blocks)
+            self.block_boundaries = DEFAULT_SCHEDULE.get_block_lambdas(self.num_blocks)
         else:
             self.block_boundaries = block_boundaries
         self.apply_freq_fix = apply_freq_fix
@@ -866,22 +866,22 @@ class LlamaDiTForCausalLM(LlamaPreTrainedModel):
         else:
             minimum_lam = maximum_lam = lam
 
-        # sigma = exp(-lambda), so the lambda ordering is reversed.
-        minimum_stdev = math.exp(-maximum_lam)
-        maximum_stdev = math.exp(-minimum_lam)
-
-        extended_stdev_boundaries = [0, *self.block_boundaries[1:-1], float("infinity")]
+        extended_lam_boundaries = [
+            float("-infinity"),
+            *self.block_boundaries[1:-1],
+            float("infinity"),
+        ]
 
         matching_blocks = [
             block_idx
             for block_idx, (lower_bound, upper_bound) in enumerate(
-                pairwise(extended_stdev_boundaries)
+                pairwise(extended_lam_boundaries)
             )
-            if minimum_stdev >= lower_bound and maximum_stdev <= upper_bound
+            if minimum_lam >= lower_bound and maximum_lam <= upper_bound
         ]
         if len(matching_blocks) == 0:
             raise ValueError(
-                f"No matching blocks! {minimum_stdev=}, {maximum_stdev=}, {extended_stdev_boundaries=}"
+                f"No matching blocks! {minimum_lam=}, {maximum_lam=}, {extended_lam_boundaries=}"
             )
         return matching_blocks[0]
 

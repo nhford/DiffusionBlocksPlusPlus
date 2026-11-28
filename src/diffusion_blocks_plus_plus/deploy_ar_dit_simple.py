@@ -51,8 +51,8 @@ def train_block(
     model.train()
 
     min_stdev, max_stdev = (
-        model.block_boundaries[block_idx],
-        model.block_boundaries[block_idx + 1],
+        math.exp(-model.block_boundaries[block_idx + 1]),
+        math.exp(-model.block_boundaries[block_idx]),
     )
 
     memory_tracker = MemoryTracker(model, optimizer, device)
@@ -157,13 +157,12 @@ def train_model(
                 step_metric=f"train/block_{block_idx}/step",
             )
 
-    for block_idx in tqdm(range(model.num_blocks - 1, -1, -1), desc="Block"):
+    for block_idx in tqdm(range(model.num_blocks), desc="Block"):
         model.set_primary_device(device)
         model.set_loaded_block(block_idx)
 
         train_embedding = (
-            not train_config.train_embedding_first_block_only
-            or block_idx == model.num_blocks - 1
+            not train_config.train_embedding_first_block_only or block_idx == 0
         )
         for param in model.input_embedding.parameters():
             param.requires_grad_(train_embedding)
@@ -227,7 +226,7 @@ def evaluate_model(
         assert masked_positions.shape == (batch_size, sequence_length)
 
         # Add 1 to the per-channel variance due to the embedding variance.
-        initial_variance = model.block_boundaries[-1] ** 2 + 1
+        initial_variance = math.exp(-model.block_boundaries[0]) ** 2 + 1
         initial_stdev = math.sqrt(initial_variance)
 
         clean_embeddings = model.embed_input_ids(token_ids[:, :-1])
@@ -376,10 +375,9 @@ if __name__ == "__main__":
 
     if checkpoint_load_path is None:
         # Block boundaries must follow the configured noise distribution.
-        run_config.model_config.block_boundaries = [
-            float(b)
-            for b in noise_schedule.get_block_stdevs(run_config.model_config.num_blocks)
-        ]
+        run_config.model_config.block_boundaries = noise_schedule.get_block_lambdas(
+            run_config.model_config.num_blocks
+        )
         model = LlamaDiTForCausalLM(run_config.model_config)
     else:
         model = LlamaDiTForCausalLM.from_pretrained(checkpoint_load_path)
