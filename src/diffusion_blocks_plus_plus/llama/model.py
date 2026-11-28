@@ -191,7 +191,7 @@ class LlamaDiTConfig(LlamaConfig):
         head_dim=None,
         cond_hidden_size: int | None = None,
         use_timestep_embedding=True,
-        num_blocks=3,
+        num_blocks=4,
         block_boundaries: list[float] | None = None,
         apply_freq_fix=True,
         timestep_conditioning="uniform",

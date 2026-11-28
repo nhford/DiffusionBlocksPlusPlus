@@ -8,7 +8,6 @@ from diffusion_blocks_plus_plus.llama.config import LlamaDataConfig
 
 from .attention_masks import (
     build_bd3lm_train_attention_mask,
-    build_train_attention_mask,
 )
 from .noise_level_manager import NoiseLevelDistribution
 
@@ -74,7 +73,14 @@ def load_data(data_config: LlamaDataConfig):
         )
         return result
 
-    def load_split(split_name: str, num_examples: int, batch_size: int) -> DataLoader:
+    def load_split(
+        split_name: str, num_examples: int | None, batch_size: int
+    ) -> DataLoader:
+        synthetic = data_config.dataset_name in ("randb", "randb_block")
+        if synthetic and num_examples is None:
+            raise ValueError(
+                f"num_examples must be set for synthetic dataset {data_config.dataset_name!r}"
+            )
         if data_config.dataset_name == "randb":
             dataset = trivial_random_dataset(num_examples, data_config.sequence_length)
         elif data_config.dataset_name == "randb_block":
@@ -82,7 +88,11 @@ def load_data(data_config: LlamaDataConfig):
         else:
             dataset = load_dataset(
                 path=data_config.dataset_name,
-                split=f"{split_name}[:{num_examples}]",
+                split=(
+                    split_name
+                    if num_examples is None
+                    else f"{split_name}[:{num_examples}]"
+                ),
             ).map(
                 function=tokenize_function,
                 batched=True,
