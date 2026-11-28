@@ -59,6 +59,7 @@ class LlamaTrainConfig:
     warmup_steps: int = 2500
     num_epochs: int = 10
     bd3_lm_block_size: int = 1
+    train_embedding_first_block_only: bool = False
 
 
 @dataclass
