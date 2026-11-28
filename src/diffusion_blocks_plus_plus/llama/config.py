@@ -59,6 +59,7 @@ class LlamaTrainConfig:
     warmup_steps: int = 2500
     num_epochs: int = 10
     bd3_lm_block_size: int = 1
+    train_embedding_first_block_only: bool = False
 
 
 @dataclass
@@ -66,7 +67,7 @@ class LlamaTestConfig:
     """Configuration for Test Run"""
 
     eval_num_steps: int = 4
-    sampler: str = "euler"
+    sampler: str = "karras_euler"
     bd3_lm_block_size: int = 1
 
 

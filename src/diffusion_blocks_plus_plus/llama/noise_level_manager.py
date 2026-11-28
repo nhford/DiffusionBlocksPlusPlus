@@ -77,19 +77,18 @@ class NoiseLevelDistribution:
         stdev = log_stdev.exp()
         return stdev
 
-    def get_block_stdevs(
+    def get_block_lambdas(
         self,
         num_layers: int,
     ) -> list[float]:
-        """From src/diffusion_blocks_plus_plus/vit/dblock_modules.py"""
+        """Get boundaries of the log-SNRs handled by each block"""
         cdf_min = norm.cdf((np.log(self.stdev_min) - self.p_mean) / self.p_std)
         cdf_max = norm.cdf((np.log(self.stdev_max) - self.p_mean) / self.p_std)
-        block_stdevs = []
-        for i in range(num_layers + 1):
+        block_lambdas = []
+        for i in reversed(range(num_layers + 1)):
             p = cdf_min + (cdf_max - cdf_min) * (i / num_layers)
-            stdev = np.exp(self.p_mean + self.p_std * norm.ppf(p))
-            block_stdevs.append(stdev)
-        return block_stdevs
+            block_lambdas.append(float(-(self.p_mean + self.p_std * norm.ppf(p))))
+        return block_lambdas
 
     def get_discrete_stdevs(
         self,
