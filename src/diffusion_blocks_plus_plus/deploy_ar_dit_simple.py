@@ -163,8 +163,16 @@ def train_model(
         model.set_primary_device(device)
         model.set_loaded_block(block_idx)
 
+        train_embedding = (
+            not train_config.train_embedding_first_block_only
+            or block_idx == model.num_blocks - 1
+        )
+        for param in model.input_embedding.parameters():
+            param.requires_grad_(train_embedding)
+
         optimizer = AdamW(
-            model.block_parameters(block_idx, True), lr=train_config.learning_rate
+            model.block_parameters(block_idx, train_embedding),
+            lr=train_config.learning_rate,
         )
 
         scheduler = LambdaLR(
